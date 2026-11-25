@@ -10,6 +10,7 @@ import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import {openaiCodexProvider} from '@earendil-works/pi-ai/providers/openai-codex';
 import {createCogAlpha,Runs,Resume,setModelSpeed} from './extension.ts';
 import {paper,minute} from './method.ts';
+import {agentWriteError,researchDirection,runAdmission,sameRunAdmission} from './research-context.ts';
 import {chatGPTLogin,checkOpenAIKey,choice,isLocalSettingsHost,modelStore,modelView,recordedStrategyModel} from './model-settings.ts';
 
 import {authorizedStrategyWrite,readTargets,strategyEvidence,strategyId} from './strategy.ts';
@@ -63,7 +64,7 @@ async function input(raw:any){
       rules[key]=n;
     }
   }
-  return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',...selected,start:raw.start,end:raw.end,horizon,seed,rules};
+  return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',...selected,start:raw.start,end:raw.end,horizon,seed,direction:researchDirection(raw.direction),rules};
 }
 function strategyDate(x:any){
   if(typeof x!=='string'||!/^\d{4}-\d\d-\d\d$/.test(x)||!Number.isFinite(Date.parse(x)))return null;
@@ -77,6 +78,13 @@ const server=createServer(async (req,res)=>{
     const method=req.method;
     if(method==='GET'&&Object.hasOwn(assets,path)){
       const name=assets[path];res.writeHead(200,{'Content-Type':mime[name.split('.').at(-1)!]+';charset=utf-8','Content-Security-Policy':"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(await readFile(join(site,name)));return;
+    }
+    if(method==='POST'&&(path==='/api/runs'||/^\/api\/runs\/[0-9a-f-]{36}\/(actions|strategies)$/.test(path))){
+      const isStrategy=path.endsWith('/strategies');
+      const problem=agentWriteError({origin:req.headers.origin,browser:req.headers['sec-fetch-site'],
+        authorization:req.headers.authorization,localHost:isStrategy||isLocalSettingsHost(req.headers.host)},
+        isStrategy?undefined:process.env.ALPHA_AGENT_TOKEN);
+      if(problem)return send(res,problem==='WEB_READ_ONLY'?403:401,{error:problem});
     }
     if(method==='POST' && (req.headers.origin && new URL(req.headers.origin).host!==req.headers.host || !req.headers['content-type']?.startsWith('application/json')))return send(res,403,{error:'BAD_REQUEST'});
     if(path==='/api/strategy-targets'&&method==='GET'){
@@ -106,23 +114,29 @@ const server=createServer(async (req,res)=>{
     }
     if(path==='/api/runs'&&method==='GET'){
       const runs=await snapshot();
-      return send(res,200,Object.values(runs).map(({id,preset,status,created,current,progress})=>({id,preset,status,created,current,progress})).reverse());
+      return send(res,200,Object.values(runs).map(({id,preset,status,created,current,progress,input})=>({id,preset,status,created,current,progress,direction:input?.direction??''})).reverse());
     }
     if(path==='/api/runs'&&method==='POST'){
-      const raw=await body(req),config=await input(raw);
-      const id=raw.id;
-      if(typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id))throw new Error('BAD_REQUEST');
-      await root.commit(async tx=>{
+      const raw=await body(req);
+      const id=raw?.id;
+      if(typeof id!=='string'||!strategyId.test(id))throw new Error('BAD_REQUEST');
+      const admission=runAdmission(raw);
+      const prior=(await snapshot())[id];
+      if(prior)return sameRunAdmission(prior.admission,admission)?send(res,202,{id}):send(res,409,{error:'RUN_ID_CONFLICT'});
+      const config=await input(admission);
+      const admitted=await root.commit(async tx=>{
         const runs=(await tx.doc(Runs,root.id)).runs;
-        if(runs[id])return;
+        if(runs[id])return sameRunAdmission(runs[id].admission,admission);
         const conversation=await tx.createConversation({ownership:{kind:'ownerless'}});
         await configure(tx,conversation.id,{model:{provider:config.provider,modelId:config.model},thinkingLevel:config.thinking,maxTurns:1,tools:[]});
         await setModelSpeed(tx,conversation.id,config.speed);
         // The run owns Agent work in a separate configured conversation; records
         // are surfaced via the root Pi document using that address in the input.
         const task=await tx.createTask(Run,{...config,id,docId:root.id},{ownership:{kind:'conversation'},conversationId:conversation.id});
-        runs[id]={id,task,preset:config.preset,provider:config.provider,model:config.model,thinking:config.thinking,speed:config.speed,input:{start:config.start,end:config.end,horizon:config.horizon,seed:config.seed,barSpec:config.barSpec},status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
+        runs[id]={id,task,admission,preset:config.preset,provider:config.provider,model:config.model,thinking:config.thinking,speed:config.speed,input:{start:config.start,end:config.end,horizon:config.horizon,seed:config.seed,barSpec:config.barSpec,direction:config.direction},status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
+        return true;
       },ctx);
+      if(!admitted)return send(res,409,{error:'RUN_ID_CONFLICT'});
       harness.resume();
       return send(res,202,{id});
     }
@@ -131,7 +145,9 @@ const server=createServer(async (req,res)=>{
       const [,id,action]=m;
       const run=(await snapshot())[id];
       if(!run)return send(res,404,{error:'NOT_FOUND'});
-      if(!action&&method==='GET')return send(res,200,run);
+      if(!action&&method==='GET'){
+        const {admission,...report}=run;return send(res,200,report);
+      }
       if(action==='strategies'&&method==='POST'){
         if(!authorizedStrategyWrite(req.headers.authorization))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
         const raw=await body(req);
@@ -159,7 +175,7 @@ const server=createServer(async (req,res)=>{
             const conversation=await tx.createConversation({ownership:{kind:'ownerless'}});
             await configure(tx,conversation.id,{model:{provider:tracked.provider,modelId:tracked.model},thinkingLevel:tracked.thinking,maxTurns:1,tools:[]});
             await setModelSpeed(tx,conversation.id,tracked.speed);
-            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence,brief,marketContext:selectedTarget.marketContext??'',researchBarSpec:r.input.barSpec,modelSettings:tracked},
+            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence,brief,marketContext:selectedTarget.marketContext??'',researchBarSpec:r.input.barSpec,researchContext:{horizon:r.input.horizon,barSpec:r.input.barSpec,direction:r.input.direction??''},modelSettings:tracked},
               {ownership:{kind:'conversation'},conversationId:conversation.id});
             r.strategies[raw.id]={task,id:raw.id,status:'generating',target:raw.target,start,end,brief,modelSettings:tracked,deployments:{}};
             return true;
@@ -218,7 +234,7 @@ const server=createServer(async (req,res)=>{
     }
     return send(res,404,{error:'NOT_FOUND'});
   } catch(e:any){
-    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED','SPEED_UNSUPPORTED','MODEL_KEY_INVALID','MODEL_CONNECTION_FAILED','MODEL_CREDENTIAL'];
+    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED','SPEED_UNSUPPORTED','MODEL_KEY_INVALID','MODEL_CONNECTION_FAILED','MODEL_CREDENTIAL','INVALID_RESEARCH_DIRECTION'];
     if(!known.includes(e.message))console.error(e);
     if(!res.headersSent)send(res,known.includes(e.message)?400:500,{error:known.includes(e.message)?e.message:'SERVER_ERROR'});
     else res.end();

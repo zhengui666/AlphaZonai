@@ -1,0 +1,122 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {createServer,type IncomingMessage,type ServerResponse} from 'node:http';
+import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+
+const cli=fileURLToPath(new URL('../cli/alphazonai.mjs',import.meta.url));
+const run='10000000-0000-4000-8000-000000000001';
+const strategy='20000000-0000-4000-8000-000000000002';
+const dates=['--start','2026-10-01','--end','2026-10-08'];
+function invoke(args:string[],env:Record<string,string>={},stdin=''){
+  return new Promise<{code:number;out:string;err:string}>((resolve,reject)=>{
+    const child=spawn(process.execPath,[cli,...args],{env:{...process.env,ALPHA_AGENT_TOKEN:'',ALPHA_STRATEGY_TOKEN:'',ALPHAZONAI_URL:'',...env}});
+    let out='',err='';
+    child.stdout.setEncoding('utf8').on('data',s=>out+=s);
+    child.stderr.setEncoding('utf8').on('data',s=>err+=s);
+    child.stdin.on('error',()=>{});
+    child.on('error',reject);
+    child.on('close',code=>resolve({code:code??1,out,err}));
+    child.stdin.end(stdin);
+  });
+}
+const json=(res:ServerResponse,status:number,v:unknown)=>{
+  res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(v));
+};
+async function fixture(handler:(req:IncomingMessage,res:ServerResponse)=>void|Promise<void>, use:(origin:string)=>Promise<void>){
+  const server=createServer((req,res)=>void Promise.resolve(handler(req,res)).catch(()=>json(res,500,{error:'FIXTURE_ERROR'})));
+  await new Promise<void>((resolve,reject)=>{
+    server.once('error',reject);
+    server.listen(0,'127.0.0.1',resolve);
+  });
+  try{
+    const address=server.address();
+    if(!address||typeof address==='string')throw Error('Invalid address');
+    await use('http://127.0.0.1:'+address.port);
+  }finally{await new Promise<void>(done=>server.close(()=>done()));}
+}
+
+test('CLI discovers commands and previews exact payload without credentials or network',async()=>{
+  const s=await invoke(['schema','runs','start']);
+  assert.equal(s.code,0);assert.equal(s.err,'');
+  assert.equal(JSON.parse(s.out).data.options['direction-file'].type,'file');
+  const p=await invoke(['runs','start','--id',run,...dates,'--horizon','7','--direction-file','-','--dry-run'],
+    {ALPHAZONAI_URL:'https://unused.invalid',ALPHA_AGENT_TOKEN:'never-print-this'},'动量与反转\n');
+  assert.equal(p.code,0);assert.equal(p.err,'');
+  assert.ok(!p.out.includes('never-print-this'));
+  assert.deepEqual(JSON.parse(p.out).data,{method:'POST',url:'https://unused.invalid/api/runs',
+    body:{id:run,preset:'minute',start:'2026-10-01',end:'2026-10-08',horizon:7,seed:42,direction:'动量与反转\n'},authVariable:'ALPHA_AGENT_TOKEN'});
+  const bad=await invoke(['runs','start','--id',run,...dates,'--unexpected','x','--dry-run']);
+  assert.equal(bad.code,2);assert.equal(bad.out,'');assert.equal(JSON.parse(bad.err).error.code,'USAGE');
+});
+
+test('CLI preserves the write ID and distinguishes acceptance from a finished run',async()=>{
+  const seen:any[]=[];
+  await fixture(async(req,res)=>{
+    if(req.method==='POST'){
+      let body='';for await(const s of req)body+=s;
+      seen.push({body:JSON.parse(body),auth:req.headers.authorization,origin:req.headers.origin});
+      json(res,202,{id:run});
+    }else json(res,200,{id:run,status:'completed'});
+  },async origin=>{
+    const env={ALPHAZONAI_URL:origin,ALPHA_AGENT_TOKEN:'agent-fixture',ALPHA_STRATEGY_TOKEN:'strategy-fixture'};
+    const args=['runs','start','--id',run,...dates,'--direction','Compare rank signals'];
+    const a=await invoke(args,env);
+    const b=await invoke(args,env);
+    assert.equal(a.code,0);assert.equal(b.code,0);
+    assert.deepEqual(seen[0],seen[1]);assert.equal(seen[0].auth,'Bearer agent-fixture');
+    assert.equal(seen[0].origin,undefined);
+    assert.equal(JSON.parse(a.out).meta.accepted,true);
+    assert.equal(JSON.parse(a.out).meta.reconcile.id,run);
+    const w=await invoke(['runs','wait','--id',run,'--wait-ms','30000'],env);
+    assert.equal(JSON.parse(w.out).data.status,'completed');
+  });
+});
+
+test('CLI uses the independent strategy token and exposes delivery receipt',async()=>{
+  await fixture(async(req,res)=>{
+    if(req.method==='POST'){
+      let s='';for await(const chunk of req)s+=chunk;
+      assert.equal(req.headers.authorization,'Bearer strategy-fixture');
+      assert.deepEqual(JSON.parse(s),{action:'push',id:strategy,target:'receiver'});
+      json(res,202,{id:strategy});
+    }else json(res,200,{strategies:{[strategy]:{status:'validated',
+      deployments:{receiver:{status:'staged',receipt:{status:'staged',activated:false,instance:'receiver'}}}}}});
+  },async origin=>{
+    const env={ALPHAZONAI_URL:origin,ALPHA_AGENT_TOKEN:'agent-fixture',ALPHA_STRATEGY_TOKEN:'strategy-fixture'};
+    const args=['--id',run,'--strategy',strategy,'--target','receiver'];
+    const accepted=await invoke(['strategies','push',...args],env);
+    assert.equal(accepted.code,0);assert.equal(JSON.parse(accepted.out).meta.accepted,true);
+    const staged=await invoke(['strategies','wait',...args],env);
+    assert.equal(staged.code,0);assert.equal(JSON.parse(staged.out).data.receipt.activated,false);
+  });
+});
+
+test('CLI reports uncertain writes without automatically resending',async()=>{
+  let count=0;
+  await fixture((req,res)=>{count++;res.destroy();},async origin=>{
+    const v=await invoke(['runs','start','--id',run,...dates],{ALPHAZONAI_URL:origin});
+    assert.equal(v.code,4);assert.equal(v.out,'');assert.equal(count,1);
+    const error=JSON.parse(v.err).error;
+    assert.equal(error.outcome,'unknown');
+    assert.deepEqual(error.reconcile,{command:'runs get',id:run});
+  });
+});
+
+test('CLI export creates a raw artifact and never overwrites an existing file',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'alpha-cli-test-'));
+  try{
+    const path=join(directory,'factors.json');
+    await fixture((req,res)=>json(res,200,{factors:[]}),async origin=>{
+      const args=['runs','export','--id',run,'--output',path];
+      const out=await invoke(args,{ALPHAZONAI_URL:origin});
+      assert.equal(out.code,0);
+      assert.deepEqual(JSON.parse(await readFile(path,'utf8')),{factors:[]});
+      const second=await invoke(args,{ALPHAZONAI_URL:origin});
+      assert.equal(second.code,2);assert.equal(JSON.parse(second.err).error.code,'OUTPUT_EXISTS');
+    });
+  }finally{await rm(directory,{recursive:true,force:true});}
+});

@@ -8,6 +8,7 @@ import {metrics, modes, roles, rng, select, shuffle, type Candidate, paper} from
 import {providerSpeed,type ServiceTier} from './model-settings.ts';
 import {isDeepStrictEqual} from 'node:util';
 import {callTarget,planInstructions,validateStrategyPlan} from './strategy.ts';
+import {researchPromptContext} from './research-context.ts';
 
 export const Runs=defineDoc<any>({kind:'alpha.runs',version:1,scope:'conversation',history:'latest',fork:'initial',initial:()=>({runs:{}}),checkpointWhen:()=>true});
 const Calls=defineDoc<any>({kind:'alpha.calls',version:1,scope:'task',history:'latest',initial:()=>({byKey:{}}),checkpointWhen:()=>true});
@@ -103,13 +104,15 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
       const {id,role,mode,operation,ancestors,feedback,config,sampling}=task.input;
       const row:Candidate={id,parents:ancestors.map((x:Candidate)=>x.id),role:role.name,mode,operation,reviews:[],revisions:[]};
       const base=`${driver.contract}\n${revSchema}`;
+      const askCandidate=(key:string,prompt:string,temperature?:number)=>
+        ask(api,ctx,`${id}:${key}`,researchPromptContext(config)+'\n'+prompt,temperature);
       const draft=async (stage:string,text:string)=>{
-        const result=revision(json(await ask(api,ctx,`${id}:${stage}`,`${base}\n${text}`,stage.includes("repair")||stage.includes("improvement")?0.8:sampling)),stage);
+        const result=revision(json(await askCandidate(stage,`${base}\n${text}`,stage.includes("repair")||stage.includes("improvement")?0.8:sampling)),stage);
         row.revisions.push(result);
         return result;
       };
       const review=async (stage:string,r:any,prompt:string)=>{
-        const v=json(await ask(api,ctx,`${id}:${stage}`,`${driver.contract}\n${prompt}\nReturn JSON { "pass": boolean, "reason": string }.\nCandidate: ${JSON.stringify(r)}`,0.8));
+        const v=json(await askCandidate(stage,`${driver.contract}\n${prompt}\nReturn JSON { "pass": boolean, "reason": string }.\nCandidate: ${JSON.stringify(r)}`,0.8));
         if(typeof v?.pass!=='boolean'||typeof v?.reason!=='string')throw new WorkflowError('MODEL_FORMAT');
         row.reviews.push({stage,pass:v.pass,reason:v.reason});
         return v;
@@ -147,7 +150,7 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
         } else if(operation==='mutation'){
           r=await draft('mutation',`Mutate this parent. Make a specific meaningful change. ${JSON.stringify({parent:last[0],feedback})}`);
         } else {
-          const guide=await ask(api,ctx,`${id}:guidance`,`Rewrite the role guidance in the requested style for this task. Return JSON {"guidance":string}. ${role.guide} ${mode}\n${driver.contract}`,sampling);
+          const guide=await askCandidate('guidance',`Rewrite the role guidance in the requested style for this task. Return JSON {"guidance":string}. ${role.guide} ${mode}\n${driver.contract}`,sampling);
           const guidance=json(guide)?.guidance;
           if(typeof guidance!=='string')throw new WorkflowError('MODEL_FORMAT');
           r=await draft('generation',`Research role ${role.name} (tier ${role.tier}). ${guidance}. Use development feedback, when available: ${JSON.stringify(feedback)}`);
@@ -226,7 +229,7 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
         const sample={positive:shuffle(sel.eligible,rnd).slice(0,2).map(example),negative:sel.negative.map(example)};
         let notes='';
         if(sample.positive.length||sample.negative.length){
-          try{notes=await ask(api,ctx,`feedback:${st.g}`,`Summarize evidenced candidate successes and failures for future generation. Do not invent metrics. Return JSON {"summary":string}. ${JSON.stringify(sample)}`);}
+          try{notes=await ask(api,ctx,`feedback:${st.g}`,`${researchPromptContext(c)}\nSummarize evidenced candidate successes and failures for future generation. Do not invent metrics. Return JSON {"summary":string}. ${JSON.stringify(sample)}`);}
           catch(e){if(api.signal.aborted)throw e;}
         }
         const history=[...st.history,sel.elites.length?sel.elites.reduce((v,a)=>v+(a.scores?.[driver.keys[0]]??0),0)/sel.elites.length:null];
@@ -257,7 +260,7 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
         const input=task.input;
         try{
           const plan=validateStrategyPlan(json(await ask(api,ctx,'strategy:plan',planInstructions+'\nUser brief: '+input.brief+'\nOperator market context: '+input.marketContext+
-            '\nResearch source bars: '+input.researchBarSpec+'\nResearch evidence (JSON): '+JSON.stringify(input.evidence),0.8)));
+            '\n'+researchPromptContext(input.researchContext??{barSpec:input.researchBarSpec})+'\nResearch evidence (JSON): '+JSON.stringify(input.evidence),0.8)));
           return api.commit(async tx=>{
             const item=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id];
             item.status='backtesting';item.plan=plan;return next({phase:'backtest',plan});
