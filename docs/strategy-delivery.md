@@ -19,7 +19,7 @@ Nautilus environment.
    the validated plan with native subscriptions and orders.
 4. The selected backtest instance runs the exact runtime and plan in its native
    Nautilus engine, against its own read-only Catalog. Retrieve the evidence and
-   exact importable config from the strategy package.
+   exact importable config and the tested runtime source from the strategy package.
 5. Select a deployment instance and **Push inactive package**. The target
    constructs the same strategy with Nautilus `StrategyFactory`, stages the
    runtime and its config, and returns a receipt with its instance name.
@@ -108,7 +108,7 @@ backtest, not silent rewriting on the deployment machine.
   portfolio fit require separate judgment.
 - **Push:** the persisted package and selected allowlisted target are the only
   inputs to a separate durable operation. The receiver validates package,
-  version, native import and matching market configuration, then atomically
+  version, native import, exact runtime source and matching market configuration, then atomically
   stages three files beneath the UUID. Repeating the same push compares bytes
   and returns the same outcome. Different files are never overwritten.
 - **Activation:** the app deliberately does not activate any strategy or start
@@ -133,7 +133,7 @@ backtest, not silent rewriting on the deployment machine.
 - `GET /api/runs/:researchId/strategies?download=:strategyId` returns the
   evidence bundle. The receiver puts the importable config, trusted Python
   module, and evidence JSON together at the destination.
-- Receiver protocol is one JSON message on stdin and one verified JSON
+- Receiver protocol is one JSON message on stdin and one validated JSON
   receipt on stdout. Both carry schema, operation and UUID. No arbitrary
   branch commands or shell input travel in the request. SSH host-key
   authentication and the forced command protect the transport boundary.

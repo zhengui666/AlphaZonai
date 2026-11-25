@@ -80,7 +80,7 @@ export async function callTarget(targetId:string, operation:'backtest'|'stage', 
   const command=target.kind==='local' ? (process.env.ALPHA_PYTHON||'python3') : 'ssh';
   const args=target.kind==='local'?[receiver,'--profile',target.profile!]:
     ['-F',target.sshConfig!,'-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ClearAllForwardings=yes',
-     '-o','PermitLocalCommand=no','-o','ForwardAgent=no','-o','ConnectTimeout=10','-T',target.alias!,'alphazonai-receive'];
+     '-o','PermitLocalCommand=no','-o','ForwardAgent=no','-o','ForwardX11=no','-o','IdentitiesOnly=yes','-o','ControlPath=none','-o','ConnectTimeout=10','-T',target.alias!,'alphazonai-receive'];
   const payload={...request,schema:1,kind:operation};
   return await new Promise<any>((resolve,reject)=>{
     const p=spawn(command,args,{signal,stdio:['pipe','pipe','pipe'],
@@ -99,7 +99,7 @@ export async function callTarget(targetId:string, operation:'backtest'|'stage', 
       let result;
       try{result=JSON.parse(Buffer.concat(out).toString('utf8'));}catch{return fail('STRATEGY_RECEIPT_INVALID');}
       if(result?.schema!==1||result?.kind!==operation||result?.id!==request.id||result?.nautilus!=='1.231.0')return fail('STRATEGY_RECEIPT_INVALID');
-      if(operation==='backtest'&&(!result.strategy?.config?.plan||!Number.isInteger(result.metrics?.filledOrders)||result.metrics.filledOrders<1))return fail('STRATEGY_RECEIPT_INVALID');
+      if(operation==='backtest'&&(!result.strategy?.config?.plan||typeof result.source!=='string'||!result.source.length||!Number.isInteger(result.metrics?.filledOrders)||result.metrics.filledOrders<1))return fail('STRATEGY_RECEIPT_INVALID');
       if(operation==='stage'&&(result.status!=='staged'||result.activated!==false||typeof result.instance!=='string'))return fail('STRATEGY_RECEIPT_INVALID');
       resolve(result);
     });

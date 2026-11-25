@@ -141,7 +141,7 @@ def run_backtest(profile, request):
         metrics["pnl"] = sanitize(result.stats_pnls)
         metrics["returns"] = sanitize(result.stats_returns)
         return {"schema": SCHEMA, "kind": "backtest", "id": request["id"], "nautilus": NAUTILUS,
-                "strategy": config, "metrics": metrics}
+                "strategy": config, "source": RUNTIME_FILE.read_bytes().decode("utf-8"), "metrics": metrics}
     finally:
         engine.dispose()
 
@@ -154,8 +154,8 @@ def stage(profile, request):
     if (bundle["schema"], bundle["nautilus"], bundle["id"]) != (SCHEMA, NAUTILUS, request["id"]):
         raise ValueError("Unsupported strategy package")
     receipt = bundle["backtest"]
-    if (receipt["schema"], receipt["kind"], receipt["id"], receipt["nautilus"], receipt["strategy"]) != (SCHEMA, "backtest", request["id"], NAUTILUS, conf) or receipt["metrics"]["filledOrders"] < 1:
-        raise ValueError("Missing matching backtest evidence")
+    if (receipt["schema"], receipt["kind"], receipt["id"], receipt["nautilus"], receipt["strategy"]) != (SCHEMA, "backtest", request["id"], NAUTILUS, conf) or receipt["metrics"]["filledOrders"] < 1 or receipt["source"].encode() != RUNTIME_FILE.read_bytes():
+        raise ValueError("Missing matching backtest evidence or runtime source differs")
     build_strategy(conf)  # resolves and instantiates the same native importable config; never builds a trading node
     root = Path(profile["staging_dir"]).resolve(strict=True)
     dest = root / request["id"]

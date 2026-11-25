@@ -64,6 +64,9 @@ class StrategyDeliveryTest(unittest.TestCase):
             bad = receiver({**live, "quantities": {str(bar_type): "0.100"}}, {"kind": "stage", "bundle": bundle})
             self.assertNotEqual(bad.returncode, 0)
             self.assertFalse((stage_dir / ID).exists())
+            wrong_source = {**bundle, "backtest": {**result, "source": "# A different runtime"}}
+            self.assertNotEqual(receiver(live, {"kind": "stage", "bundle": wrong_source}).returncode, 0)
+            self.assertFalse((stage_dir / ID).exists())
             for _ in range(2):
                 staged = receiver(live, {"kind": "stage", "bundle": bundle})
                 self.assertEqual(staged.returncode, 0, staged.stderr)
@@ -71,5 +74,5 @@ class StrategyDeliveryTest(unittest.TestCase):
                 self.assertEqual(receipt["instance"], "separate-runtime")
                 self.assertFalse(receipt["activated"])
             self.assertEqual(json.loads((stage_dir / ID / "importable-strategy.json").read_text()), result["strategy"])
-            self.assertTrue((stage_dir / ID / "alpha_signal_strategy.py").is_file())
+            self.assertEqual((stage_dir / ID / "alpha_signal_strategy.py").read_text(), result["source"])
             self.assertEqual(sorted(x.name for x in stage_dir.iterdir()), [ID])

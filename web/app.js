@@ -138,6 +138,7 @@ function strategyView(){
     if(item.bundle){
       const m=item.bundle.backtest.metrics;
       sec.append(node('p',t('strategyFills')+': '+format(m.filledOrders)+' · '+t('assetCount')+': '+format(m.instruments)));
+      const metrics=node('details');metrics.append(node('summary',t('strategyBacktestMetrics')),node('pre',JSON.stringify(m,null,2)));sec.append(metrics);
       const download=node('a',t('strategyDownload'),'button');download.href='/api/runs/'+active.id+'/strategies?download='+item.id;sec.append(download);
       if(deployTarget.options.length)sec.append(btn('strategyPush',async()=>{
         if(!deployTarget.value)return;
