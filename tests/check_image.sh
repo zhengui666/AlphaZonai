@@ -20,6 +20,13 @@ case "$check" in
     for attempt in {1..20}; do
       if result=$(curl --noproxy '*' -fsS --connect-timeout 1 --max-time 2 "http://$address/api/runs") && [[ "$result" == '[]' ]]; then
         printf 'Ready after %d attempt(s): %s\n' "$attempt" "$result"
+        curl --noproxy '*' -fsS --max-time 3 "http://$address/api/model-settings" >/dev/null
+        status=$(curl --noproxy '*' -sS --max-time 3 -o /dev/null -w '%{http_code}' \
+          -H "Origin: http://$address" -H 'Content-Type: application/json' \
+          -d '{}' "http://$address/api/runs")
+        test "$status" = 403
+        docker exec -e ALPHAZONAI_URL=http://127.0.0.1:8787 "$container" alphazonai runs list |
+          docker exec -i "$container" node -e 'let s="";process.stdin.on("data",b=>s+=b);process.stdin.on("end",()=>{if(JSON.parse(s).ok!==true)process.exitCode=1;});'
         exit 0
       fi
       if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then

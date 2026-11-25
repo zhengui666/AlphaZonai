@@ -15,6 +15,8 @@ COPY src src
 COPY quant quant
 COPY web web
 COPY skills skills
+COPY cli cli
+RUN chmod 0755 cli/alphazonai.mjs && ln -s /app/cli/alphazonai.mjs /usr/local/bin/alphazonai
 USER alpha
 EXPOSE 8787
 CMD ["node", "src/server.ts"]

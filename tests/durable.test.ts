@@ -14,6 +14,8 @@ import {paper} from '../src/method.ts';
 test('native Pi tasks keep candidate failures and recover the same generation',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'az-pi-'));
   const counts=new Map<string,number>();
+  const prompts:string[]=[];
+  const direction='Compare volume persistence with price reversals; never use BTC as a market proxy.';
   const {extension,Run}=createCogAlpha({
     keys:['quality'],contract:'Text quality',
     prepare:async()=>({rows:3}),
@@ -23,6 +25,7 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
       return code==='0.1'?{failure:'TEST_REJECTION'}:{scores:{quality:code==='0.0'?0.1:0.9}};
     }
   },async (_r,_c,id,text)=>{
+    prompts.push(text);
     if(id.includes('feedback:'))return '{"summary":"Recorded outcomes"}';
     if(id.includes('guidance'))return '{"guidance":"Improve evidence selection."}';
     if(id.includes('code_quality:')||id.includes('judge:'))return '{"pass":true,"reason":"Valid text"}';
@@ -39,7 +42,7 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
     const task=await root.commit(async tx=>{
       const doc=await tx.doc(Runs,root.id);
       doc.runs[id]={id,status:'queued',generations:[],current:0,limit:0,pause:true};
-      return tx.createTask(Run,{id,seed:1,rules},{ownership:{kind:'conversation'}});
+      return tx.createTask(Run,{id,seed:1,rules,direction,horizon:5,barSpec:'1-MINUTE-LAST'},{ownership:{kind:'conversation'}});
     },ctx);
     const wait=async (p:(r:any)=>boolean)=>{
       for(let i=0;i<260;i++){
@@ -64,6 +67,12 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
     assert.equal(counts.get('0.0'),1);
     assert.equal(run.generations[0].rows[1].failure,'TEST_REJECTION');
     assert.deepEqual(run.generations[0].elites,['0.2']);
+    assert.ok(prompts.length>=5);
+    for(const p of prompts){
+      assert.ok(p.includes(direction));
+      assert.ok(p.includes('"predictionHorizonMinutes":5'));
+      assert.ok(p.includes('"sourceBars":"1-MINUTE-LAST"'));
+    }
   } finally{
     await h.close(ctx);await rm(dir,{recursive:true,force:true});
   }

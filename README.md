@@ -2,7 +2,8 @@
 
 CogAlpha search and evolution on Pi Durable, with NautilusTrader market data.
 
-- Start, pause, stop and resume research runs.
+- Use the CLI to start, pause, stop and resume research runs.
+- Read charts and reports in the Web dashboard. Only Model Settings are editable there.
 - Inspect candidate code, reviews, scores, and ancestry.
 - Export research factors or generate a free-form native Nautilus strategy.
 - Backtest on one configured instance and stage an inactive package on another.
@@ -19,13 +20,29 @@ docker run --rm -p 127.0.0.1:8787:8787 \
   --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
   -e OPENAI_API_KEY -v alphazonai-state:/state \
   --mount type=bind,source="$PWD/catalog",destination=/catalog,readonly \
-  ghcr.io/zhengui666/alphazonai:v0.1.0
+  ghcr.io/zhengui666/alphazonai:"${ALPHA_VERSION:?choose a published tag}"
 ```
 
 Open http://127.0.0.1:8787. The Linux host must allow nested user and network
 namespaces for Bubblewrap. The Docker flags permit the nested sandbox; the
 service does not run privileged. Run only on a self-hosted machine you control.
 Without a functioning sandbox, the research run stops before asking the model.
+
+## CLI and external agents
+
+Use the [external agent skill](SKILL.md) and the [CLI workflows](cli/WORKFLOWS.md).
+The standalone `cli/alphazonai.mjs` from the release works with Node.js 24,
+without installing application dependencies. The same executable is installed
+as `alphazonai` in the service image. For an existing named container:
+
+```sh
+docker exec -e ALPHAZONAI_URL=http://127.0.0.1:8787 alphazonai alphazonai runs list
+```
+
+Point external agents at your private AlphaZonai URL. Set `ALPHA_AGENT_TOKEN`
+for remote research writes. Set `ALPHA_STRATEGY_TOKEN` separately if the agent
+is authorized to build or stage strategies. The
+[CLI and reporting design](docs/agent-cli-design.md) describes the boundaries.
 
 ## Strategy delivery
 

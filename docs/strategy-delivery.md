@@ -8,12 +8,11 @@ remote.
 
 ## User workflow
 
-1. Complete a research run with usable elite candidates. The Web form starts
-   minute research without a preset picker. Existing clients may still select
-   the original CogAlpha methodological parameters through the research API.
-2. Select a configured **Backtest target** and later UTC date range. Choose
-   Add an optional free-text strategy brief, then choose **Generate and backtest**. The model receives recent shortlisted factor
-   formulas, source, and scores as evidence, not executable instructions.
+1. Start research through the CLI and wait for a completed run with usable
+   elite candidates. You can set an optional research direction at admission.
+2. Use the CLI to choose a configured backtest target and a later UTC date
+   range. Add a free-text strategy brief if useful. The model receives the
+   original research direction and selected factor evidence.
 3. The build inherits the run's connected provider (OpenAI API or ChatGPT via
    Pi's Codex OAuth), model, reasoning intensity and service tier. Defaults
    changed after the run do not alter a build. Pi Durable generates a standalone native Python module, its strategy class,
@@ -24,8 +23,7 @@ remote.
 4. The backtest target runs the requested module in an isolated NautilusTrader
    engine. Inspect the technical receipt and the exact source and configuration
    in the downloadable package.
-5. Choose an independently configured **Deployment target** and select
-   **Push inactive package**. The receiver checks that the source and config
+5. Use the CLI to push an inactive package to an independently configured deployment target. The receiver checks that the source and config
    match the receipt, compiles syntax without importing it, and writes the
    native package atomically. The verified receipt says which instance staged
    it. It does not start a trading node or place any orders.
@@ -46,7 +44,7 @@ Set `ALPHA_STRATEGY_TARGETS` to a mounted target registry and
 `ALPHA_STRATEGY_TOKEN` to a suitable secret for strategy operations. Run on a
 private interface, SSH forward, or authenticated TLS proxy. The web app is
 not intended for unauthenticated public exposure. Target IDs and capabilities
-are operator configured; a browser does not supply arbitrary hostnames.
+are operator configured; an external agent does not supply arbitrary hostnames.
 
 ```json
 [
