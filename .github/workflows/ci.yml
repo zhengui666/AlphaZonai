@@ -17,15 +17,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: pip install -r quant/requirements.txt
       - run: npm test
-      - run: docker build -t alphazonai:test .
+      - name: Build image
+        id: build
+        run: docker build -t alphazonai:test .
       - name: Start image and read health
-        run: |
-          docker run -d --name alphazonai-test -p 127.0.0.1:8787:8787 alphazonai:test
-          trap 'docker logs alphazonai-test; docker rm -f alphazonai-test' EXIT
-          curl -fsS --retry 8 --retry-connrefused http://127.0.0.1:8787/api/runs
+        run: bash tests/check_image.sh alphazonai:test http
       - name: Execute isolated factor inside the built image
-        run: |
-          docker run --rm --network none \
-            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --mount type=bind,source="${GITHUB_WORKSPACE}/tests/smoke_isolated.py",target=/app/tests/smoke_isolated.py,readonly \
-            --entrypoint python alphazonai:test /app/tests/smoke_isolated.py
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash tests/check_image.sh alphazonai:test isolated

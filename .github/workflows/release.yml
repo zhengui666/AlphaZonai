@@ -17,8 +17,17 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci --ignore-scripts && pip install -r quant/requirements.txt && npm test
-      - run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build release image
+        run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME}"
           docker build -t "$image" .
-          docker push "$image"
+          echo "ALPHA_RELEASE_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Start release image and read health
+        run: bash tests/check_image.sh "$ALPHA_RELEASE_IMAGE" http
+      - name: Execute isolated factor inside the release image
+        run: bash tests/check_image.sh "$ALPHA_RELEASE_IMAGE" isolated
+      - name: Push the tested image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$ALPHA_RELEASE_IMAGE"
+          docker image inspect --format '{{json .RepoDigests}}' "$ALPHA_RELEASE_IMAGE"
