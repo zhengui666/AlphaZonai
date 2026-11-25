@@ -55,7 +55,7 @@ const piAsk:Ask=async (api,ctx,id,prompt,sampling)=>{
     await configure(tx,child.id,{instructions:skill,tools:[],maxTurns:1});
     calls.byKey[id]=child.id;
     const request=await tx.doc(Request,child.id);
-    request.maxTokens=4096;
+    request.maxTokens=id==='strategy:plan'?16000:4096;
     request.temperature=sampling??null;
     cid=child.id;
   },ctx);
@@ -249,7 +249,8 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
       plan:async(task,api,ctx)=>{
         const input=task.input;
         try{
-          const plan=validateStrategyPlan(json(await ask(api,ctx,'strategy:plan',planInstructions+'\nResearch evidence (JSON): '+JSON.stringify(input.evidence),0.8)));
+          const plan=validateStrategyPlan(json(await ask(api,ctx,'strategy:plan',planInstructions+'\nUser brief: '+input.brief+'\nOperator market context: '+input.marketContext+
+            '\nResearch source bars: '+input.researchBarSpec+'\nResearch evidence (JSON): '+JSON.stringify(input.evidence),0.8)));
           return api.commit(async tx=>{
             const item=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id];
             item.status='backtesting';item.plan=plan;return next({phase:'backtest',plan});
@@ -268,13 +269,15 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
         try{
           receipt=await callTarget(input.target,'backtest',
             {id:input.id,plan,start:input.start,end:input.end,research_end:input.researchEnd},api.signal);
-          const received=validateStrategyPlan(receipt.strategy.config.plan);
-          if(!isDeepStrictEqual(received,plan))throw Error('STRATEGY_RECEIPT_INVALID');
+          const module='alpha_strategy_'+input.id.replaceAll('-','');
+          if(receipt.source!==plan.source||receipt.strategy.strategy_path!==module+':'+plan.strategyClass||
+             receipt.strategy.config_path!==module+':'+plan.configClass||!isDeepStrictEqual(receipt.strategy.config,plan.config))
+            throw Error('STRATEGY_RECEIPT_INVALID');
         }catch(e:any){if(api.signal.aborted)throw e;problem=e.message;}
         return api.commit(async tx=>{
           const item=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id];
           if(problem){item.status='failed';item.error=problem;return done(null);}
-          item.bundle={schema:1,nautilus:receipt.nautilus,id:input.id,researchRun:input.runId,sourceCandidates:input.evidence.map((x:any)=>x.id),backtestTarget:input.target,strategy:receipt.strategy,backtest:receipt};
+          item.bundle={schema:2,plan,nautilus:receipt.nautilus,id:input.id,researchRun:input.runId,sourceCandidates:input.evidence.map((x:any)=>x.id),backtestTarget:input.target,strategy:receipt.strategy,backtest:receipt};
           item.status='validated';
           return done(null);
         },ctx);

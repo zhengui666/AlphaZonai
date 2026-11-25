@@ -78,7 +78,7 @@ LogLevel ERROR
         const signal=new AbortController().signal;
         const report=await callTarget('alpha-history','backtest',request,signal);
         if(report.metrics.filledOrders<2||report.source!==expectedSource)throw new Error('Unexpected backtest evidence');
-        const bundle={schema:1,id:request.id,nautilus:report.nautilus,strategy:report.strategy,backtest:report};
+        const bundle={schema:2,id:request.id,nautilus:report.nautilus,plan:request.plan,strategy:report.strategy,backtest:report};
         const stage=await callTarget('alpha-stage','stage',{id:request.id,bundle},signal);
         if(stage.instance!=='separate-runtime'||stage.activated!==false)throw new Error('Incorrect stage receipt');
         console.log(JSON.stringify(stage));
@@ -89,7 +89,7 @@ LogLevel ERROR
                                 text=True, capture_output=True, timeout=45)
         if result.returncode:
             raise RuntimeError((files / "daemon.log").read_text() + result.stderr)
-        if (stage / request["id"] / "alpha_signal_strategy.py").read_text() != expected_source:
+        if (stage / request["id"] / ("alpha_strategy_" + request["id"].replace("-", "") + ".py")).read_text() != expected_source:
             raise RuntimeError("Receiver did not stage the tested source")
     finally:
         if pid.exists():

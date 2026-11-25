@@ -137,7 +137,7 @@ function strategyView(){
     if(item.error)sec.append(node('p',t(item.error),'problem'));
     if(item.bundle){
       const m=item.bundle.backtest.metrics;
-      sec.append(node('p',t('strategyFills')+': '+format(m.filledOrders)+' · '+t('assetCount')+': '+format(m.instruments)));
+      sec.append(node('p',t('strategyFills')+': '+format(m.filledOrders)));
       const metrics=node('details');metrics.append(node('summary',t('strategyBacktestMetrics')),node('pre',JSON.stringify(m,null,2)));sec.append(metrics);
       const download=node('a',t('strategyDownload'),'button');download.href='/api/runs/'+active.id+'/strategies?download='+item.id;sec.append(download);
       if(deployTarget.options.length)sec.append(btn('strategyPush',async()=>{
@@ -156,7 +156,7 @@ function strategyView(){
 buildForm.onsubmit=async e=>{
   e.preventDefault();
   if(button.disabled||!active)return;
-  const request={action:'build',target:backtestTarget.value,start:$('strategy-backtest-start').value,end:$('strategy-backtest-end').value};
+  const request={action:'build',brief:$('strategy-brief').value,target:backtestTarget.value,start:$('strategy-backtest-start').value,end:$('strategy-backtest-end').value};
   const [key,id]=acquire({run:active.id,...request});
   button.disabled=true;
   try{await api('/runs/'+active.id+'/strategies',{...request,id},$('strategy-token').value);attempts.delete(key);}

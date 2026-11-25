@@ -5,7 +5,7 @@ CogAlpha search and evolution on Pi Durable, with NautilusTrader market data.
 - Start, pause, stop and resume research runs.
 - Inspect candidate code, reviews, scores, and ancestry.
 - Export candidate factors and turn shortlisted research into a Nautilus strategy.
-- Backtest against one Nautilus instance and stage an inactive strategy on another.
+- Generate free-form native strategies via Pi Durable, then backtest against one Nautilus instance and stage an inactive strategy on another.
 - English and Simplified Chinese.
 
 ## Run

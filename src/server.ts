@@ -108,11 +108,13 @@ const server=createServer(async (req,res)=>{
         const raw=await body(req);
         if(typeof raw?.id!=='string'||!strategyId.test(raw.id)||typeof raw.target!=='string'||!['build','push'].includes(raw.action))
           return send(res,400,{error:'BAD_REQUEST'});
-        const roles=(await readTargets()).find(x=>x.id===raw.target)?.roles??[];
-        if(!roles.includes(raw.action==='build'?'backtest':'deploy'))return send(res,404,{error:'STRATEGY_TARGET_MISSING'});
+        const selectedTarget=(await readTargets()).find(x=>x.id===raw.target);
+        if(!selectedTarget?.roles.includes(raw.action==='build'?'backtest':'deploy'))return send(res,404,{error:'STRATEGY_TARGET_MISSING'});
         if(raw.action==='build'){
           if(!process.env.OPENAI_API_KEY)return send(res,400,{error:'MODEL_CREDENTIAL'});
           if(run.status!=='completed')return send(res,409,{error:'STRATEGY_RUN_INCOMPLETE'});
+          if(raw.brief!==undefined&&(typeof raw.brief!=='string'||raw.brief.length>2000))return send(res,400,{error:'BAD_REQUEST'});
+          const brief=(raw.brief??'').trim();
           const evidence=strategyEvidence(run);
           if(!evidence.length)return send(res,409,{error:'STRATEGY_NO_ELITES'});
           const start=strategyDate(raw.start),end=strategyDate(raw.end),researchEnd=strategyDate(run.input.end);
@@ -122,12 +124,12 @@ const server=createServer(async (req,res)=>{
             const r=(await tx.doc(Runs,root.id)).runs[id];
             r.strategies??={};
             const existing=r.strategies[raw.id];
-            if(existing)return existing.target===raw.target&&existing.start===start&&existing.end===end;
+            if(existing)return existing.target===raw.target&&existing.start===start&&existing.end===end&&existing.brief===brief;
             const conversation=await tx.createConversation({ownership:{kind:'ownerless'}});
             await configure(tx,conversation.id,{model:{provider:'openai',modelId:r.model},thinkingLevel:r.thinking,maxTurns:1,tools:[]});
-            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence},
+            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence,brief,marketContext:selectedTarget.marketContext??'',researchBarSpec:r.input.barSpec},
               {ownership:{kind:'conversation'},conversationId:conversation.id});
-            r.strategies[raw.id]={task,id:raw.id,status:'generating',target:raw.target,start,end,deployments:{}};
+            r.strategies[raw.id]={task,id:raw.id,status:'generating',target:raw.target,start,end,brief,deployments:{}};
             return true;
           },ctx);
           if(!result)return send(res,409,{error:'STRATEGY_ID_CONFLICT'});

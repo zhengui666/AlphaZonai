@@ -1,178 +1,167 @@
-"""Nautilus-side receiver. Backtest or stage an inactive importable strategy; never start a live node."""
+"""Native receiver for backtesting or staging one arbitrary AlphaZonai strategy."""
 import argparse
+import ast
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
 import re
+import selectors
+import time
+import subprocess
 import sys
 import tempfile
-from decimal import Decimal
+from datetime import datetime, timezone
 
-import pandas as pd
-
-from alpha_signal_strategy import clean_plan
-
-
-SCHEMA = 1
+SCHEMA = 2
 NAUTILUS = "1.231.0"
-RUNTIME_FILE = Path(__file__).with_name("alpha_signal_strategy.py")
-ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+WORKER = Path(__file__).with_name("strategy_backtest.py")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+CLASS = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,99}")
 
 
-def normalize_time(value):
-    if not isinstance(value, str):
-        raise ValueError("Invalid UTC time")
-    parsed = pd.Timestamp(value)
-    if parsed.tzinfo is None:
+def package_definition(id_, plan):
+    if not isinstance(plan, dict) or set(plan) != {"title", "source", "strategyClass", "configClass", "config"}:
+        raise ValueError("Invalid generated strategy plan")
+    if not isinstance(plan["title"], str) or not 1 <= len(plan["title"].strip()) <= 96:
+        raise ValueError("Invalid strategy title")
+    if not isinstance(plan["source"], str) or not 1 <= len(plan["source"].encode()) <= 256_000:
+        raise ValueError("Invalid strategy module size")
+    tree = ast.parse(plan["source"], filename="generated_strategy.py")
+    definitions = {n.name for n in tree.body if isinstance(n, ast.ClassDef)}
+    names = [plan["strategyClass"], plan["configClass"]]
+    if any(not isinstance(n, str) or not CLASS.fullmatch(n) or n not in definitions for n in names) or names[0] == names[1]:
+        raise ValueError("Two distinct top-level strategy and config classes required")
+    if not isinstance(plan["config"], dict):
+        raise ValueError("Strategy config must be an object")
+    encoded = json.dumps(plan["config"], allow_nan=False).encode()
+    if len(encoded) > 64_000:
+        raise ValueError("Strategy config exceeds transport limit")
+    module = "alpha_strategy_" + id_.replace("-", "")
+    native = {"strategy_path": module + ":" + names[0], "config_path": module + ":" + names[1], "config": plan["config"]}
+    return module, native
+
+
+def normalize_time(text):
+    value = datetime.fromisoformat(text)
+    if value.tzinfo is None:
         raise ValueError("Explicit UTC time required")
-    return parsed.tz_convert("UTC")
+    return value.astimezone(timezone.utc)
 
 
-def package_config(plan, market):
-    from nautilus_trader.model.data import BarType
-    from nautilus_trader.model.objects import Quantity
-    if not isinstance(market, dict) or not market:
-        raise ValueError("No configured instruments")
-    instruments = set()
-    for b, quantity in market.items():
-        bt = BarType.from_str(b)
-        if str(bt.spec) != "1-MINUTE-LAST" or not b.endswith("-EXTERNAL") or bt.instrument_id in instruments:
-            raise ValueError("Expected one external 1-MINUTE-LAST stream per instrument")
-        if not isinstance(quantity, str) or Quantity.from_str(quantity).as_decimal() <= 0:
-            raise ValueError("Positive exact order size required")
-        instruments.add(bt.instrument_id)
-    return {"strategy_path": "alpha_signal_strategy:AlphaSignalStrategy",
-            "config_path": "alpha_signal_strategy:AlphaSignalConfig",
-            "config": {"plan": clean_plan(plan), "quantities": market}}
-
-
-def build_strategy(config):
-    from nautilus_trader.trading.config import ImportableStrategyConfig, StrategyFactory
-    return StrategyFactory.create(ImportableStrategyConfig(**config))
+def isolated_result(command, payload, seconds=900):
+    # Use a bounded stdio protocol. The sandbox need not have any writable host mount.
+    output = bytearray()
+    payload = memoryview(payload)
+    deadline = time.monotonic() + seconds
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as p, selectors.DefaultSelector() as sel:
+        try:
+            sel.register(p.stdin, selectors.EVENT_WRITE)
+            sel.register(p.stdout, selectors.EVENT_READ)
+            while sel.get_map():
+                timeout = deadline - time.monotonic()
+                if timeout <= 0:
+                    raise subprocess.TimeoutExpired(command[0], seconds)
+                events = sel.select(timeout)
+                for key, _ in events:
+                    if key.fileobj is p.stdin:
+                        try:
+                            payload = payload[os.write(p.stdin.fileno(), payload[:4096]):] if payload else payload
+                        except BrokenPipeError:
+                            payload = payload[:0]
+                        if not payload:
+                            sel.unregister(p.stdin)
+                            p.stdin.close()
+                    else:
+                        chunk = os.read(p.stdout.fileno(), 65536)
+                        if not chunk:
+                            sel.unregister(p.stdout)
+                        else:
+                            output.extend(chunk)
+                            if len(output) > 1_000_000:
+                                raise ValueError("Native backtest exceeded response budget")
+            if p.wait(timeout=max(0, deadline - time.monotonic())):
+                try:
+                    detail = json.loads(output).get("error", "")
+                except (ValueError, AttributeError):
+                    detail = ""
+                raise ValueError("Native isolated backtest failed" + (": " + detail[:260] if isinstance(detail, str) and detail else ""))
+            return json.loads(output)
+        finally:
+            if p.poll() is None:
+                p.kill()
 
 
 def run_backtest(profile, request):
-    from nautilus_trader.backtest.engine import BacktestEngine
-    from nautilus_trader.backtest.config import BacktestEngineConfig
-    from nautilus_trader.backtest.models import FillModel, LatencyModel
-    from nautilus_trader.common.config import LoggingConfig
-    from nautilus_trader.model.data import Bar, BarType
-    from nautilus_trader.model.enums import AccountType, OmsType
-    from nautilus_trader.model.identifiers import Venue
-    from nautilus_trader.model.objects import Money, Quantity
-    from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
     start, end, research_end = map(normalize_time, (request["start"], request["end"], request["research_end"]))
     if start < research_end or end <= start:
         raise ValueError("Use a later, non-overlapping backtest interval")
-    config = package_config(request["plan"], profile["quantities"])
-    strategy = build_strategy(config)
-    types = [BarType.from_str(b) for b in config["config"]["quantities"]]
-    catalog = ParquetDataCatalog(profile["catalog"])
-    expected = {str(b.instrument_id) for b in types}
-    instruments = {str(i.id): i for i in catalog.instruments() if str(i.id) in expected}
-    if set(instruments) != expected:
-        raise ValueError("Missing native catalog instrument definition")
-    for bt in types:
-        order_size = Quantity.from_str(profile["quantities"][str(bt)]).as_decimal()
-        instrument = instruments[str(bt.instrument_id)]
-        if order_size % instrument.size_increment.as_decimal() or instrument.min_quantity is not None and order_size < instrument.min_quantity.as_decimal():
-            raise ValueError("Configured instrument quantity does not meet minimum or increment")
-    settings = profile["venues"]
-    venues = {str(bt.instrument_id.venue) for bt in types}
-    if venues != set(settings):
-        raise ValueError("Backtest venue settings must match the market universe")
-    fill = profile["fills"]
-    if type(fill["latency_ns"]) is not int or fill["latency_ns"] < 0 or not 0 <= fill["prob_slippage"] <= 1:
-        raise ValueError("Invalid simulation latency or slippage")
-    engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
-    try:
-        for name, venue in settings.items():
-            engine.add_venue(venue=Venue(name), oms_type=OmsType.NETTING,
-                             account_type=AccountType[venue["account_type"]],
-                             default_leverage=Decimal(str(venue.get("default_leverage", 1))),
-                             starting_balances=[Money.from_str(x) for x in venue["starting_balances"]],
-                             fill_model=FillModel(prob_slippage=float(fill["prob_slippage"]), random_seed=1),
-                             latency_model=LatencyModel(base_latency_nanos=fill["latency_ns"]))
-        for instrument in instruments.values():
-            engine.add_instrument(instrument)
-        engine.add_strategy(strategy)
-
-        # Preserve the native event stream in chronological day batches, with no sampling.
-        observed = dict.fromkeys([str(t) for t in types], 0)
-        previous = {}
-        lower = start
-        while lower < end:
-            upper = min(end, lower + pd.Timedelta(days=1))
-            rows = catalog.query(Bar, identifiers=list(observed), start=lower.value, end=upper.value-1)
-            for bar in rows:
-                key = str(bar.bar_type)
-                if key not in observed or not lower.value <= bar.ts_init < upper.value:
-                    raise ValueError("Nautilus catalog returned unexpected bar stream or timestamp")
-                if previous.get(key, -1) >= bar.ts_init:
-                    raise ValueError("Unexpected duplicate or unordered bar timestamp")
-                previous[key] = bar.ts_init
-                observed[key] += 1
-            if rows:
-                engine.add_data(rows)
-                engine.run(streaming=True)
-                engine.clear_data()
-            lower = upper
-        warmup = max(s["lookback"] for s in config["config"]["plan"]["signals"]) + 1
-        if any(n < warmup for n in observed.values()):
-            raise ValueError("Insufficient bars for one or more configured instruments")
-        engine.end()
-        result = engine.get_result()
-        fills = sum(float(o.filled_qty) > 0 for o in engine.cache.orders())
-        if not fills:
+    module, native = package_definition(request["id"], request["plan"])
+    catalog = Path(profile["catalog"]).resolve(strict=True)
+    if not catalog.is_dir() or not isinstance(profile["run"], dict):
+        raise ValueError("Invalid native backtest profile")
+    with tempfile.TemporaryDirectory(prefix="alpha-backtest-") as tmp:
+        temp = Path(tmp)
+        source = temp / (module + ".py")
+        source.write_bytes(request["plan"]["source"].encode())
+        # Give the strategy engine only the selected Catalog and normalization inputs.
+        # This process remains separate and never imports the generated strategy.
+        bind = ["--ro-bind", "/usr", "/usr", "--ro-bind-try", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64"]
+        runtimes = sorted({str(Path(sys.prefix).resolve()), str(Path(sys.base_prefix).resolve())}, key=len)
+        for path in runtimes:
+            if path not in ("/usr", "/") and not path.startswith("/usr/"):
+                bind.extend(["--ro-bind", path, path])
+        library_paths = ":".join([p + "/lib" for p in runtimes if p != "/"] + ["/usr/local/lib"])
+        sandbox = [
+            "bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--clearenv", *bind,
+            "--setenv", "LD_LIBRARY_PATH", library_paths, "--setenv", "OPENBLAS_NUM_THREADS", "1",
+            "--setenv", "OMP_NUM_THREADS", "1", "--setenv", "LANG", "C.UTF-8",
+            "--dev", "/dev", "--size", "67108864", "--tmpfs", "/tmp", "--dir", "/work", "--dir", "/input",
+            "--ro-bind", str(WORKER), "/work/strategy_backtest.py",
+            "--ro-bind", str(source), "/work/" + source.name,
+            "--ro-bind", str(catalog), "/input/catalog",
+            "--chdir", "/work",
+            sys.executable, "-I", "/work/strategy_backtest.py",
+        ]
+        try:
+            metrics = isolated_result(sandbox, json.dumps({"run": profile["run"], "strategy": native,
+                                      "start": start.isoformat(), "end": end.isoformat()}).encode())
+        except (OSError, subprocess.TimeoutExpired):
+            raise ValueError("Native isolated backtest unavailable") from None
+        if type(metrics.get("filledOrders")) is not int or metrics["filledOrders"] < 1:
             raise ValueError("No executed orders in backtest")
-        metrics = {"orders": result.total_orders, "filledOrders": fills, "positions": result.total_positions,
-                   "iterations": result.iterations, "bars": sum(observed.values()), "instruments": len(observed),
-                   "first": start.isoformat(), "endExclusive": end.isoformat()}
-        # Round-trip through JSON and remove non-finite optional native stats.
-        def sanitize(x):
-            import math
-            if isinstance(x, dict):
-                return {str(k): sanitize(v) for k, v in x.items()}
-            if isinstance(x, (int, float)):
-                return x if math.isfinite(x) else None
-            if x is None or isinstance(x, str):
-                return x
-            return str(x)
-        metrics["pnl"] = sanitize(result.stats_pnls)
-        metrics["returns"] = sanitize(result.stats_returns)
-        return {"schema": SCHEMA, "kind": "backtest", "id": request["id"], "nautilus": NAUTILUS,
-                "strategy": config, "source": RUNTIME_FILE.read_bytes().decode("utf-8"), "metrics": metrics}
-    finally:
-        engine.dispose()
+    return {"schema": SCHEMA, "kind": "backtest", "id": request["id"], "nautilus": NAUTILUS,
+            "strategy": native, "source": request["plan"]["source"], "metrics": metrics}
 
 
 def stage(profile, request):
     bundle = request["bundle"]
-    conf = package_config(bundle["strategy"]["config"]["plan"], profile["quantities"])
-    if bundle["strategy"] != conf:
-        raise ValueError("Destination market and size configuration differs from the validated strategy")
-    if (bundle["schema"], bundle["nautilus"], bundle["id"]) != (SCHEMA, NAUTILUS, request["id"]):
-        raise ValueError("Unsupported strategy package")
+    plan = bundle["plan"]
+    module, native = package_definition(request["id"], plan)
+    if (bundle["schema"], bundle["nautilus"], bundle["id"], bundle["strategy"]) != (SCHEMA, NAUTILUS, request["id"], native):
+        raise ValueError("Unsupported or inconsistent strategy package")
     receipt = bundle["backtest"]
-    if (receipt["schema"], receipt["kind"], receipt["id"], receipt["nautilus"], receipt["strategy"]) != (SCHEMA, "backtest", request["id"], NAUTILUS, conf) or receipt["metrics"]["filledOrders"] < 1 or receipt["source"].encode() != RUNTIME_FILE.read_bytes():
-        raise ValueError("Missing matching backtest evidence or runtime source differs")
-    build_strategy(conf)  # resolves and instantiates the same native importable config; never builds a trading node
+    if (receipt["schema"], receipt["kind"], receipt["id"], receipt["nautilus"], receipt["strategy"], receipt["source"]) != (SCHEMA, "backtest", request["id"], NAUTILUS, native, plan["source"]) or receipt["metrics"]["filledOrders"] < 1:
+        raise ValueError("Source or config differs from evidence")
+    # Compile only. Importing a Python module can execute top-level statements.
+    # Inactive staging must not execute untrusted code on the deployment host.
+    compiled_source = plan["source"].encode()
+    compile(compiled_source, module + ".py", "exec")
     root = Path(profile["staging_dir"]).resolve(strict=True)
     dest = root / request["id"]
     expected = {
-        "alpha_signal_strategy.py": RUNTIME_FILE.read_bytes(),
-        "importable-strategy.json": json.dumps(conf, sort_keys=True, ensure_ascii=False, allow_nan=False).encode(),
+        module + ".py": compiled_source,
+        "importable-strategy.json": json.dumps(native, sort_keys=True, ensure_ascii=False, allow_nan=False).encode(),
         "strategy-package.json": json.dumps(bundle, sort_keys=True, ensure_ascii=False, allow_nan=False).encode(),
     }
     with tempfile.TemporaryDirectory(prefix=".alpha-", dir=root) as tmp:
         work = Path(tmp) / "package"
-        work.mkdir()
+        work.mkdir(mode=0o750)
         for name, content in expected.items():
             (work / name).write_bytes(content)
         try:
             work.rename(dest)
         except OSError:
-            # The same request may have succeeded before an SSH disconnect. Never replace different content.
             if not dest.is_dir() or dest.is_symlink() or any((dest / n).is_symlink() or (dest / n).read_bytes() != c for n,c in expected.items()):
                 raise
     return {"schema": SCHEMA, "kind": "stage", "id": request["id"], "nautilus": NAUTILUS,
@@ -185,7 +174,7 @@ def main():
     args = parser.parse_args()
     profile = json.loads(args.profile.read_text())
     request = json.load(sys.stdin)
-    if version("nautilus_trader") != NAUTILUS or request.get("schema") != SCHEMA or not ID.fullmatch(request.get("id", "")):
+    if version("nautilus_trader") != NAUTILUS or request.get("schema") != SCHEMA or not UUID.fullmatch(request.get("id", "")):
         raise ValueError("Unsupported NautilusTrader version or request")
     op = request.get("kind")
     if op not in profile["allow"]:
