@@ -23,3 +23,9 @@ jobs:
           docker run -d --name alphazonai-test -p 127.0.0.1:8787:8787 alphazonai:test
           trap 'docker logs alphazonai-test; docker rm -f alphazonai-test' EXIT
           curl -fsS --retry 8 --retry-connrefused http://127.0.0.1:8787/api/runs
+      - name: Execute isolated factor inside the built image
+        run: |
+          docker run --rm --network none \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            --mount type=bind,source="${GITHUB_WORKSPACE}/tests/smoke_isolated.py",target=/app/tests/smoke_isolated.py,readonly \
+            --entrypoint python alphazonai:test /app/tests/smoke_isolated.py
