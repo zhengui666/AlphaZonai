@@ -5,10 +5,15 @@ import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {metrics, modes, roles, rng, select, shuffle, type Candidate, paper} from './method.ts';
+import {providerSpeed,type ServiceTier} from './model-settings.ts';
 
 export const Runs=defineDoc<any>({kind:'alpha.runs',version:1,scope:'conversation',history:'latest',fork:'initial',initial:()=>({runs:{}}),checkpointWhen:()=>true});
 const Calls=defineDoc<any>({kind:'alpha.calls',version:1,scope:'task',history:'latest',initial:()=>({byKey:{}}),checkpointWhen:()=>true});
 const Request=defineDoc<any>({kind:'alpha.request',version:1,scope:'conversation',history:'latest',fork:'initial',initial:()=>({}),checkpointWhen:()=>true});
+export async function setModelSpeed(tx:any,id:any,speed:ServiceTier|null){
+  const request=await tx.doc(Request,id);
+  request.speed=speed;
+}
 export const Resume=defineSignal({name:'alpha.resume',version:1,schema:obj({action:str()})});
 const owner=(api:any)=>({ownership:{kind:'task' as const,taskId:api.taskId}});
 const next=(checkpoint:any)=>({status:'pending' as const,checkpoint});
@@ -45,6 +50,7 @@ type Ask=(api:any,ctx:any,id:string,prompt:string,sampling?:number)=>Promise<str
 const piAsk:Ask=async (api,ctx,id,prompt,sampling)=>{
   const skill=(await readFile(internalSkill,'utf8')).replace(/^---[\s\S]*?---\s*/, '').trim();
   let cid;
+  const parentRequest=await api.snapshot(Request,api.conversationId,ctx);
   await api.commit(async (tx:any)=>{
     const calls=await tx.doc(Calls,api.taskId);
     if(calls.byKey[id]){cid=calls.byKey[id];return;}
@@ -54,6 +60,7 @@ const piAsk:Ask=async (api,ctx,id,prompt,sampling)=>{
     const request=await tx.doc(Request,child.id);
     request.maxTokens=4096;
     request.temperature=sampling??null;
+    request.speed=parentRequest?.speed??null;
     cid=child.id;
   },ctx);
   const conversation=await api.conversation(cid,ctx);
@@ -237,8 +244,8 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
   });
   return {Run,extension:defineExtension({name:'alphazonai',tasks:[Run,Gen,CandidateTask],hooks:[hook(GenerationTask,{beforeProviderRequest:async (request,api,ctx)=>{
     const options=await api.snapshot(Request,api.conversationId,ctx);
-    if(!options?.maxTokens||request.model.api!=='openai-responses'||!request.payload||typeof request.payload!=='object')return;
-    const payload={...request.payload,max_output_tokens:options.maxTokens} as Record<string,unknown>;
+    if(!options||request.model.api!=='openai-responses'||!request.payload||typeof request.payload!=='object')return;
+    const payload=providerSpeed({...request.payload,...(options.maxTokens?{max_output_tokens:options.maxTokens}:{})},request.model,options.speed);
     // Reasoning endpoints do not uniformly accept temperature. Only apply it when
     // the active provider model declares explicit sampling support, or is non-reasoning.
     if(options.temperature!=null&&(!request.model.reasoning||request.model.id.startsWith('gpt-oss-')))payload.temperature=options.temperature;

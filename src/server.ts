@@ -7,12 +7,14 @@ import {Harness,createRegistry,configure} from '@earendil-works/pi-durable';
 import {openNodeSqliteStorage} from '@earendil-works/pi-durable/storage/sqlite/node';
 import {createModels} from '@earendil-works/pi-ai/models';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
-import {createCogAlpha,Runs,Resume} from './extension.ts';
+import {createCogAlpha,Runs,Resume,setModelSpeed} from './extension.ts';
 import {paper,minute} from './method.ts';
+import {checkOpenAIKey,choice,isLocalSettingsHost,modelStore,modelView} from './model-settings.ts';
 
 const state=resolve(process.env.ALPHA_STATE||'state');
 const catalog=resolve(process.env.ALPHA_CATALOG||'/catalog');
-const models=createModels();
+const modelPrefs=modelStore(state);
+const models=createModels({credentials:modelPrefs.credentials});
 models.setProvider(openaiProvider());
 const registry=createRegistry();
 const {extension,Run}=createCogAlpha();
@@ -31,16 +33,20 @@ async function body(req:any){
   let data='';for await(const b of req){data+=b;if(data.length>16000)throw new Error('BAD_REQUEST');}
   try{return JSON.parse(data);}catch{throw new Error('BAD_REQUEST');}
 }
-function input(raw:any){
+const availableModels=async()=>(await models.getAvailable('openai')).map(modelView);
+async function settings(){
+  const stored=await modelPrefs.savedKey();
+  return {connected:Boolean(await models.checkAuth('openai')),stored,defaults:await modelPrefs.defaults(),models:await availableModels()};
+}
+async function input(raw:any){
   const validDate=(x:unknown)=>typeof x==='string'&&/^\d{4}-\d\d-\d\d$/.test(x)&&Number.isFinite(Date.parse(x))&&new Date(x).toISOString().slice(0,10)===x;
   if(!raw||!['paper','minute'].includes(raw.preset)||!validDate(raw.start)||!validDate(raw.end)||raw.start>=raw.end)throw new Error('INVALID_DATES');
   const horizon=Number(raw.horizon),seed=Number(raw.seed);
   if(!Number.isSafeInteger(horizon)||horizon<1||!Number.isSafeInteger(seed))throw new Error('BAD_REQUEST');
-  if(typeof raw.model!=='string'||!raw.model||raw.model.length>128)throw new Error('MODEL_REQUIRED');
-  const model=models.getModels('openai').find(x=>x.id===raw.model);
-  if(!model)throw new Error('MODEL_UNKNOWN');
-  const thinking=typeof raw.thinking==='string'?raw.thinking:'off';
-  if(thinking!=='off'&&(!model.reasoning||!model.thinkingLevelMap?.[thinking]))throw new Error('THINKING_UNSUPPORTED');
+  if(!await models.checkAuth('openai'))throw Error('MODEL_CREDENTIAL');
+  const defaults=await modelPrefs.defaults();
+  const selected=choice({model:raw.model||defaults?.model,thinking:raw.thinking??defaults?.thinking,
+    speed:raw.speed===''?null:raw.speed??defaults?.speed},await availableModels());
   const rules={...(raw.preset==='paper'?paper:minute)};
   for(const key of ['parallel','generations','plateauWindow'] as const){
     const num=raw[key];
@@ -50,7 +56,7 @@ function input(raw:any){
       rules[key]=n;
     }
   }
-  return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',model:raw.model,thinking,start:raw.start,end:raw.end,horizon,seed,rules};
+  return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',...selected,start:raw.start,end:raw.end,horizon,seed,rules};
 }
 const server=createServer(async (req,res)=>{
   try{
@@ -61,17 +67,27 @@ const server=createServer(async (req,res)=>{
       const name=assets[path];res.writeHead(200,{'Content-Type':mime[name.split('.').at(-1)!]+';charset=utf-8','Content-Security-Policy':"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(await readFile(join(site,name)));return;
     }
     if(method==='POST' && (req.headers.origin && new URL(req.headers.origin).host!==req.headers.host || !req.headers['content-type']?.startsWith('application/json')))return send(res,403,{error:'BAD_REQUEST'});
-    if(path==='/api/models'&&method==='GET'){
-      const list=await models.getAvailable('openai');
-      return send(res,200,{models:list.map(m=>({id:m.id,name:m.name,thinking:['off',...Object.keys(m.thinkingLevelMap||{}).filter(k=>k!=='off'&&m.reasoning)]}))});
+    if(path==='/api/models'&&method==='GET')return send(res,200,{models:await availableModels()});
+    if(path==='/api/model-settings'&&method==='GET')return send(res,200,{...(await settings()),writable:isLocalSettingsHost(req.headers.host)});
+    if(path==='/api/model-settings'&&method==='POST'){
+      if(!isLocalSettingsHost(req.headers.host)||!req.headers.origin)return send(res,403,{error:'MODEL_SETTINGS_LOCAL'});
+      const raw=await body(req);
+      if(raw?.action==='connect'){
+        const key=await checkOpenAIKey(raw.key);
+        await modelPrefs.credentials.modify('openai',async()=>({type:'api_key',key}));
+      }else if(raw?.action==='disconnect'){
+        await modelPrefs.credentials.delete('openai');
+      }else if(raw?.action==='defaults'){
+        await modelPrefs.save(choice(raw,await availableModels()));
+      }else throw Error('BAD_REQUEST');
+      return send(res,200,{...(await settings()),writable:true});
     }
     if(path==='/api/runs'&&method==='GET'){
       const runs=await snapshot();
       return send(res,200,Object.values(runs).map(({id,preset,status,created,current,progress})=>({id,preset,status,created,current,progress})).reverse());
     }
     if(path==='/api/runs'&&method==='POST'){
-      const raw=await body(req),config=input(raw);
-      if(process.env.OPENAI_API_KEY===undefined)return send(res,400,{error:'MODEL_CREDENTIAL'});
+      const raw=await body(req),config=await input(raw);
       const id=raw.id;
       if(typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id))throw new Error('BAD_REQUEST');
       await root.commit(async tx=>{
@@ -79,10 +95,11 @@ const server=createServer(async (req,res)=>{
         if(runs[id])return;
         const conversation=await tx.createConversation({ownership:{kind:'ownerless'}});
         await configure(tx,conversation.id,{model:{provider:'openai',modelId:config.model},thinkingLevel:config.thinking,maxTurns:1,tools:[]});
+        await setModelSpeed(tx,conversation.id,config.speed);
         // The run owns Agent work in a separate configured conversation; records
         // are surfaced via the root Pi document using that address in the input.
         const task=await tx.createTask(Run,{...config,id,docId:root.id},{ownership:{kind:'conversation'},conversationId:conversation.id});
-        runs[id]={id,task,preset:config.preset,model:config.model,thinking:config.thinking,input:{start:config.start,end:config.end,horizon:config.horizon,seed:config.seed,barSpec:config.barSpec},status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
+        runs[id]={id,task,preset:config.preset,model:config.model,thinking:config.thinking,speed:config.speed,input:{start:config.start,end:config.end,horizon:config.horizon,seed:config.seed,barSpec:config.barSpec},status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
       },ctx);
       harness.resume();
       return send(res,202,{id});
@@ -97,7 +114,7 @@ const server=createServer(async (req,res)=>{
         const selected=new Set(run.generations.flatMap((g:any)=>g.elites));
         const rows=run.generations.flatMap((g:any)=>g.rows).filter((x:any)=>selected.has(x.id)).map((x:any)=>({id:x.id,parents:x.parents,scores:x.scores,...x.revisions.at(-1)}));
         res.setHeader('Content-Disposition','attachment; filename="alphazonai-factors.json"');
-        return send(res,200,{schemaVersion:1,run:id,preset:run.preset,model:run.model,input:run.input,coverage:run.coverage??null,factors:rows});
+        return send(res,200,{schemaVersion:1,run:id,preset:run.preset,model:run.model,thinking:run.thinking,speed:run.speed??null,input:run.input,coverage:run.coverage??null,factors:rows});
       }
       if(action==='events'&&method==='GET'){
         const watch=await harness.watchDoc(Runs,root.id,ctx);
@@ -126,7 +143,7 @@ const server=createServer(async (req,res)=>{
     }
     return send(res,404,{error:'NOT_FOUND'});
   } catch(e:any){
-    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED'];
+    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED','SPEED_UNSUPPORTED','MODEL_KEY_INVALID','MODEL_CONNECTION_FAILED','MODEL_CREDENTIAL'];
     if(!known.includes(e.message))console.error(e);
     if(!res.headersSent)send(res,known.includes(e.message)?400:500,{error:known.includes(e.message)?e.message:'SERVER_ERROR'});
     else res.end();

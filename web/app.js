@@ -1,8 +1,8 @@
 import {packs} from './locale.js';
 const $=id=>document.getElementById(id);
-const form=$('form');
+const form=$('form'),defaultsForm=$('modelDefaultsForm'),keyForm=$('modelKeyForm');
 let lang=Object.hasOwn(packs,localStorage.getItem('alpha.locale'))?localStorage.getItem('alpha.locale'):'en';
-let runs=[],list=[],active,stream,selectedId,candidate,generation,errorCode;
+let runs=[],list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings;
 const t=k=>packs[lang][k]||packs.en[k]||k;
 const node=(name,text,cls)=>{const e=document.createElement(name);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
 const format=v=>v==null?'—':typeof v==='number'?Intl.NumberFormat(lang,{maximumFractionDigits:5}).format(v):v;
@@ -20,7 +20,7 @@ function drawRuns(){
     return b;
   }));
 }
-function home(){selectedId=undefined;active=undefined;stream?.close();location.hash='';err();$('create').hidden=false;$('detail').hidden=true;drawRuns();}
+function home(){selectedId=undefined;active=undefined;stream?.close();location.hash='';err();$('modelSettings').hidden=true;$('create').hidden=false;$('detail').hidden=true;drawRuns();}
 async function open(id){
   stream?.close();selectedId=id;active=undefined;generation=undefined;candidate=undefined;err();location.hash=id;
   try{
@@ -29,18 +29,72 @@ async function open(id){
     stream.onmessage=e=>{if(selectedId!==id)return;active=JSON.parse(e.data);render();const i=runs.findIndex(r=>r.id===id);if(i>=0){runs[i].status=active.status;drawRuns();}};
   }catch(e){err(e.message);}
 }
-function setupModel(){
-  const model=form.elements.model.value;
-  const current=list.find(x=>x.id===model);
-  const levels=current?.thinking||['off'];
-  const prior=form.elements.thinking.value;
-  form.elements.thinking.replaceChildren(...levels.map(k=>makeOption(k,k.slice(0,1).toUpperCase()+k.slice(1))));
-  if(levels.includes(prior))form.elements.thinking.value=prior;
+function setupModel(target,preferred){
+  const current=list.find(x=>x.id===target.elements.model.value);
+  const levels=current?.thinking||['off'], speeds=current?.speed||[];
+  const effort=preferred?.thinking??target.elements.thinking.value;
+  const speed=preferred?.speed??target.elements.speed.value;
+  target.elements.thinking.replaceChildren(...levels.map(k=>makeOption(k,k.slice(0,1).toUpperCase()+k.slice(1))));
+  if(levels.includes(effort))target.elements.thinking.value=effort;
+  target.elements.speed.replaceChildren(makeOption('',t('providerDefault')),...speeds.map(k=>makeOption(k,k==='priority'?'Fast':'Standard')));
+  if(speeds.includes(speed))target.elements.speed.value=speed;
+  target.elements.speed.disabled=speeds.length===0;
 }
+function showModels(preferDefaults){
+  const pref=modelSettings?.defaults;
+  for(const target of [form,defaultsForm]){
+    const old=target.elements.model.value;
+    target.elements.model.replaceChildren(...list.map(x=>makeOption(x.id,x.name||x.id)));
+    const id=preferDefaults&&pref?.model?pref.model:old||pref?.model;
+    if(list.some(m=>m.id===id))target.elements.model.value=id;
+    setupModel(target,preferDefaults&&pref?.model===target.elements.model.value?pref:undefined);
+  }
+  $('modelConnection').textContent=t(modelSettings?.connected?'modelConnected':'modelDisconnected');
+  keyForm.elements.key.disabled=!modelSettings?.writable;
+  keyForm.querySelector('[type=submit]').disabled=!modelSettings?.writable;
+  $('disconnectModel').disabled=!modelSettings?.writable||!modelSettings?.stored;
+  defaultsForm.querySelector('[type=submit]').disabled=!modelSettings?.writable||!list.length;
+}
+async function loadModels(preferDefaults){
+  modelSettings=await api('/model-settings');
+  list=modelSettings.models;
+  showModels(preferDefaults);
+}
+async function saveModelSettings(value,formElement){
+  if(formElement.dataset.saving)return;
+  formElement.dataset.saving='1';
+  err();
+  try{
+    modelSettings=await api('/model-settings',value);
+    list=modelSettings.models;
+    showModels(true);
+    if(value.action==='defaults')$('modelConnection').textContent=t('modelSaved');
+  }catch(e){err(e.message);}
+  finally{delete formElement.dataset.saving;}
+}
+$('modelSettingsButton').onclick=()=>{
+  selectedId=undefined;active=undefined;stream?.close();location.hash='';
+  $('create').hidden=true;$('detail').hidden=true;$('modelSettings').hidden=false;
+  err();drawRuns();loadModels(true).catch(e=>err(e.message));
+};
+keyForm.onsubmit=e=>{
+  e.preventDefault();
+  if(keyForm.dataset.saving||!modelSettings?.writable)return;
+  const key=keyForm.elements.key.value;keyForm.elements.key.value='';
+  void saveModelSettings({action:'connect',key},keyForm);
+};
+$('disconnectModel').onclick=()=>saveModelSettings({action:'disconnect'},keyForm);
+$('refreshModels').onclick=()=>loadModels(true).catch(e=>err(e.message));
+defaultsForm.onsubmit=e=>{
+  e.preventDefault();
+  if(!modelSettings?.writable)return;
+  const {model,thinking,speed}=defaultsForm.elements;
+  void saveModelSettings({action:'defaults',model:model.value,thinking:thinking.value,speed:speed.value||null},defaultsForm);
+};
 function makeOption(value,title){const o=node('option',title);o.value=value;return o;}
 function stylePreset(){for(const e of document.querySelectorAll('.tunable'))e.hidden=form.elements.preset.value==='paper';}
-form.elements.model.onchange=setupModel;form.elements.preset.onchange=stylePreset;
-api('/models').then(r=>{list=r.models;form.elements.model.replaceChildren(...list.map(x=>makeOption(x.id,x.name||x.id)));setupModel();if(!list.length)err('MODEL_CREDENTIAL');}).catch(e=>err(e.message));
+form.elements.model.onchange=()=>setupModel(form);defaultsForm.elements.model.onchange=()=>setupModel(defaultsForm);form.elements.preset.onchange=stylePreset;
+loadModels(true).catch(e=>err(e.message));
 form.onsubmit=async e=>{
   e.preventDefault();err();
   const payload=Object.fromEntries(new FormData(form));payload.id=crypto.randomUUID();
@@ -62,7 +116,7 @@ function chart(g,k){
 }
 function render(){
   if(!active)return;
-  $('create').hidden=true;$('detail').hidden=false;
+  $('modelSettings').hidden=true;$('create').hidden=true;$('detail').hidden=false;
   const r=active;const h=node('div',undefined,'heading');const title=node('div');title.append(node('h1',t(r.preset)),node('span',t(r.status),'pill'));h.append(title);
   const controls=node('div',undefined,'actions');for(const [verb,statuses] of [['pause',['queued','running']],['resume',['pausing','paused']],['stop',['queued','running','pausing','paused']]]){
     if(statuses.includes(r.status))controls.append(btn(verb,()=>api('/runs/'+r.id+'/actions',{action:verb}).catch(e=>err(e.message))));
@@ -106,7 +160,7 @@ function render(){
 function localize(){
   document.documentElement.lang=lang;
   for(const e of document.querySelectorAll('[data-i]'))e.textContent=t(e.dataset.i);
-  $('new').textContent='+ '+t('newRun');$('lang').value=lang;err(errorCode);drawRuns();render();
+  $('new').textContent='+ '+t('newRun');$('lang').value=lang;err(errorCode);if(modelSettings)showModels(false);drawRuns();render();
 }
 $('lang').onchange=e=>{lang=e.target.value;localStorage.setItem('alpha.locale',lang);localize();};
 $('new').onclick=home;
