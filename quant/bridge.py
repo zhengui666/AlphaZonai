@@ -26,16 +26,41 @@ def make_labels(frame, horizon):
     return pd.DataFrame({"ts": frame.ts, "instrument": frame.instrument,
                          "target": target.where(available & np.isfinite(target))})
 
+def _run_factor(script, features, timeout):
+    # Bind the Python environment and two input files only. No ambient environment,
+    # Catalog directory, labels, host home, sockets, or network are available.
+    cmd=["bwrap","--unshare-all","--die-with-parent","--new-session","--clearenv",
+         "--ro-bind","/usr","/usr","--ro-bind-try","/lib","/lib","--ro-bind-try","/lib64","/lib64",
+         "--dev","/dev","--tmpfs","/tmp","--dir","/work",
+         "--ro-bind",str(HERE/"factor.py"),"/work/factor.py",
+         "--ro-bind",str(script),"/work/source.py",
+         "--ro-bind",str(features),"/work/features.parquet",
+         "--setenv","OPENBLAS_NUM_THREADS","1","--setenv","OMP_NUM_THREADS","1"]
+    if not str(RUNTIME).startswith("/usr/") and RUNTIME != Path("/usr"):
+        cmd += ["--ro-bind",str(RUNTIME),str(RUNTIME)]
+    cmd += ["--chdir","/work",sys.executable,"-I","/work/factor.py","/work/source.py","/work/features.parquet"]
+    return subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,env={"PATH":os.defpath})
+
+
 def sandbox_available():
+    # Probe the actual isolated entry point before any provider calls.
     try:
-        out=subprocess.run(["bwrap","--unshare-all","--die-with-parent","--clearenv",
-                            "--ro-bind","/usr","/usr","--ro-bind-try","/lib","/lib",
-                            "--ro-bind-try","/lib64","/lib64","/usr/bin/true"],
-                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5,
-                           env={"PATH":os.defpath})
-        return out.returncode==0
-    except (OSError,subprocess.TimeoutExpired):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "probe.py"
+            features = root / "features.parquet"
+            script.write_text("def factor(df):\n    return df.close\n", encoding="utf8")
+            pd.DataFrame({"ts":[0], "instrument":["probe"], "close":[1.0]}).to_parquet(
+                features, index=False)
+            result = _run_factor(script, features, timeout=15)
+            if result.returncode:
+                diagnostic = result.stderr.decode(errors="replace").strip()[-800:]
+                print(f"Trusted factor sandbox probe failed: {diagnostic}", file=sys.stderr)
+                return False
+            return json.loads(result.stdout) == [1.0]
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
+
 
 def prepare(catalog_path, start, end, horizon, bar_spec, out):
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
@@ -81,19 +106,7 @@ def score(data, source, max_nan):
     with tempfile.TemporaryDirectory(dir=data) as td:
         script=Path(td) / "source.py"
         script.write_text(source,encoding="utf8")
-        # Bind the Python environment and two input files only. No ambient environment,
-        # Catalog directory, labels, host home, sockets, or network are available.
-        cmd=["bwrap","--unshare-all","--die-with-parent","--new-session","--clearenv",
-             "--ro-bind","/usr","/usr","--ro-bind-try","/lib","/lib","--ro-bind-try","/lib64","/lib64",
-             "--proc","/proc","--dev","/dev","--tmpfs","/tmp","--dir","/work",
-             "--ro-bind",str(HERE/"factor.py"),"/work/factor.py",
-             "--ro-bind",str(script),"/work/source.py",
-             "--ro-bind",str(data/"features.parquet"),"/work/features.parquet",
-             "--setenv","OPENBLAS_NUM_THREADS","1","--setenv","OMP_NUM_THREADS","1"]
-        if not str(RUNTIME).startswith("/usr/") and RUNTIME != Path("/usr"):
-            cmd += ["--ro-bind",str(RUNTIME),str(RUNTIME)]
-        cmd += ["--chdir","/work",sys.executable,"-I","/work/factor.py","/work/source.py","/work/features.parquet"]
-        p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=120,env={"PATH":os.defpath})
+        p = _run_factor(script, data / "features.parquet", timeout=120)
         if p.returncode:
             log=p.stderr.decode(errors="replace")
             if "bwrap:" in log:
