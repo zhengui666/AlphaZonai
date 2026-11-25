@@ -8,7 +8,7 @@ import {BACKGROUND_CONTEXT as ctx} from '@earendil-works/chord/context';
 import {Harness,createRegistry} from '@earendil-works/pi-durable';
 import {openNodeSqliteStorage} from '@earendil-works/pi-durable/storage/sqlite/node';
 import {createModels} from '@earendil-works/pi-ai/models';
-import {createCogAlpha,Runs,Resume} from '../src/extension.ts';
+import {createCogAlpha,Runs,Resume,setModelSpeed} from '../src/extension.ts';
 import {paper} from '../src/method.ts';
 
 test('native Pi tasks keep candidate failures and recover the same generation',async()=>{
@@ -73,9 +73,9 @@ test('Pi native conversations return JSON to generation and review tasks',async(
   const {openaiProvider}=await import('@earendil-works/pi-ai/providers/openai');
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai');
   const provider=openaiProvider();
-  const model=provider.getModels()[0];
-  const seen:string[]=[];
-  const stream=(m:any,transcript:any)=>{
+  const model=provider.getModels().find(x=>x.id==='gpt-5.4')!;
+  const seen:string[]=[], speed:unknown[]=[];
+  const stream=(m:any,transcript:any,opts:any)=>{
     const last=transcript.messages.filter((x:any)=>x.role==='user').at(-1);
     const prompt=typeof last.content==='string'?last.content:last.content.map((x:any)=>x.text).join('');
     seen.push(prompt);
@@ -85,7 +85,13 @@ test('Pi native conversations return JSON to generation and review tasks',async(
       '{"name":"Candidate","hypothesis":"Effect","formula":"x","code":"actual-code"}';
     const r={role:'assistant',content:[{type:'text',text}],api:m.api,provider:m.provider,model:m.id,usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'stop',timestamp:Date.now()};
     const channel=createAssistantMessageEventStream();
-    channel.push({type:'done',reason:'stop',message:r});
+    void (async()=>{
+      try{
+        const transformed=await opts?.onPayload?.({model:m.id},m);
+        speed.push(transformed?.service_tier);
+        channel.push({type:'done',reason:'stop',message:r});
+      }catch(e){channel.push({type:'error',reason:'error',error:{...r,stopReason:'error',errorMessage:String(e)}});}
+    })();
     return channel;
   };
   const models=createModels();
@@ -99,6 +105,7 @@ test('Pi native conversations return JSON to generation and review tasks',async(
     const id='native';
     const task=await root.commit(async tx=>{
       (await tx.doc(Runs,root.id)).runs[id]={id,status:'queued',generations:[],current:0,limit:0};
+      await setModelSpeed(tx,root.id,'priority');
       return tx.createTask(Run,{id,seed:1,rules:{...paper,initial:1,generations:0}},{ownership:{kind:'conversation'}});
     },ctx);
     h.resume();
@@ -107,5 +114,6 @@ test('Pi native conversations return JSON to generation and review tasks',async(
     const run=(await h.snapshot(Runs,root.id,ctx))!.runs[id];
     assert.deepEqual(run.generations[0].rows[0].scores,{quality:1},JSON.stringify({row:run.generations[0].rows[0],seen}));
     assert.equal(seen.length,5);
+    assert.deepEqual(speed,Array(5).fill('priority'));
   }finally{await h.close(ctx);await rm(dir,{recursive:true,force:true});}
 });

@@ -1,15 +1,15 @@
 import {packs} from './locale.js';
 const $=id=>document.getElementById(id);
-const form=$('form');
+const form=$('form'),defaultsForm=$('modelDefaultsForm'),keyForm=$('modelKeyForm');
 let lang=Object.hasOwn(packs,localStorage.getItem('alpha.locale'))?localStorage.getItem('alpha.locale'):'en';
-let runs=[],list=[],active,stream,selectedId,candidate,generation,errorCode;
+let runs=[],list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings,chatGPTPoll;
 const t=k=>packs[lang][k]||packs.en[k]||k;
 const node=(name,text,cls)=>{const e=document.createElement(name);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
 const format=v=>v==null?'—':typeof v==='number'?Intl.NumberFormat(lang,{maximumFractionDigits:5}).format(v):v;
 const btn=(k,fn,cls)=>{const b=node('button',t(k),cls);b.type='button';b.onclick=fn;return b;};
 function err(code){errorCode=code;$('error').hidden=!code;$('error').textContent=code?t(code):'';}
-async function api(path,body){
-  const r=await fetch('/api'+path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+async function api(path,body,token){
+  const r=await fetch('/api'+path,body?{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(body)}:{});
   const j=await r.json();if(!r.ok)throw Error(j.error||'SERVER_ERROR');return j;
 }
 function refreshRuns(){api('/runs').then(r=>{runs=r;drawRuns();}).catch(e=>err(e.message));}
@@ -20,8 +20,9 @@ function drawRuns(){
     return b;
   }));
 }
-function home(){selectedId=undefined;active=undefined;stream?.close();location.hash='';err();$('create').hidden=false;$('detail').hidden=true;drawRuns();}
+function home(){$('strategy-delivery').hidden=true;selectedId=undefined;active=undefined;stream?.close();location.hash='';err();$('modelSettings').hidden=true;$('create').hidden=false;$('detail').hidden=true;drawRuns();}
 async function open(id){
+  $('strategy-delivery').hidden=true;
   stream?.close();selectedId=id;active=undefined;generation=undefined;candidate=undefined;err();location.hash=id;
   try{
     const r=await api('/runs/'+id);if(selectedId!==id)return;active=r;render();
@@ -29,22 +30,102 @@ async function open(id){
     stream.onmessage=e=>{if(selectedId!==id)return;active=JSON.parse(e.data);render();const i=runs.findIndex(r=>r.id===id);if(i>=0){runs[i].status=active.status;drawRuns();}};
   }catch(e){err(e.message);}
 }
-function setupModel(){
-  const model=form.elements.model.value;
-  const current=list.find(x=>x.id===model);
-  const levels=current?.thinking||['off'];
-  const prior=form.elements.thinking.value;
-  form.elements.thinking.replaceChildren(...levels.map(k=>makeOption(k,k.slice(0,1).toUpperCase()+k.slice(1))));
-  if(levels.includes(prior))form.elements.thinking.value=prior;
+const modelKey=x=>(x.provider||'openai')+':'+(x.id||x.model);
+function setupModel(target,preferred){
+  const current=list.find(x=>modelKey(x)===target.elements.model.value);
+  const levels=current?.thinking||['off'], speeds=current?.speed||[];
+  const effort=preferred?.thinking??target.elements.thinking.value;
+  const speed=preferred?.speed??target.elements.speed.value;
+  target.elements.thinking.replaceChildren(...levels.map(k=>makeOption(k,k.slice(0,1).toUpperCase()+k.slice(1))));
+  if(levels.includes(effort))target.elements.thinking.value=effort;
+  target.elements.speed.replaceChildren(makeOption('',t('providerDefault')),...speeds.map(k=>makeOption(k,k==='priority'?'Fast':'Standard')));
+  if(speeds.includes(speed))target.elements.speed.value=speed;
+  target.elements.speed.disabled=speeds.length===0;
 }
+function showModels(preferDefaults){
+  const pref=modelSettings?.defaults;
+  for(const target of [form,defaultsForm]){
+    const old=target.elements.model.value;
+    target.elements.model.replaceChildren(...list.map(x=>makeOption(modelKey(x),(x.name||x.id)+' / '+(x.provider==='openai-codex'?'ChatGPT':'OpenAI API'))));
+    const prefKey=pref?.model?modelKey(pref):'';
+    const id=preferDefaults&&prefKey?prefKey:old||prefKey;
+    if(list.some(m=>modelKey(m)===id))target.elements.model.value=id;
+    setupModel(target,preferDefaults&&prefKey===target.elements.model.value?pref:undefined);
+  }
+  $('modelConnection').textContent=t(modelSettings?.connected?'modelConnected':'modelDisconnected');
+  keyForm.elements.key.disabled=!modelSettings?.writable;
+  keyForm.querySelector('[type=submit]').disabled=!modelSettings?.writable;
+  $('disconnectModel').disabled=!modelSettings?.writable||!modelSettings?.stored;
+  defaultsForm.querySelector('[type=submit]').disabled=!modelSettings?.writable||!list.length;
+  showChatGPT();
+}
+function showChatGPT(){
+  const local=modelSettings?.writable, connected=modelSettings?.chatGPTConnected, login=modelSettings?.chatGPT;
+  $('chatGPTActions').hidden=!local;
+  const pending=['starting','waiting'].includes(login?.status);
+  $('chatGPTStart').hidden=pending||connected;
+  $('chatGPTCancel').hidden=!pending;
+  $('chatGPTDisconnect').hidden=!connected;
+  $('chatGPTStatus').textContent=connected?t('chatGPTConnected'):login?.status==='failed'?t('chatGPTFailed'):'';
+  const code=login?.status==='waiting'?login.code:'';
+  $('chatGPTDevice').hidden=!code;
+  if(code){$('chatGPTCode').textContent=code;$('chatGPTLink').href=login.url;}
+  else {$('chatGPTCode').textContent='';$('chatGPTLink').removeAttribute('href');}
+  if(pending&&!chatGPTPoll){
+    chatGPTPoll=setTimeout(()=>{chatGPTPoll=undefined;loadModels(false).catch(e=>err(e.message));},2500);
+  }else if(!pending&&chatGPTPoll){clearTimeout(chatGPTPoll);chatGPTPoll=undefined;}
+}
+async function loadModels(preferDefaults){
+  modelSettings=await api('/model-settings');
+  list=modelSettings.models;
+  showModels(preferDefaults);
+}
+async function saveModelSettings(value,formElement){
+  if(formElement.dataset.saving)return;
+  formElement.dataset.saving='1';
+  err();
+  try{
+    modelSettings=await api('/model-settings',value);
+    list=modelSettings.models;
+    showModels(true);
+    if(value.action==='defaults')$('modelConnection').textContent=t('modelSaved');
+  }catch(e){err(e.message);}
+  finally{delete formElement.dataset.saving;}
+}
+$('modelSettingsButton').onclick=()=>{
+  selectedId=undefined;active=undefined;stream?.close();location.hash='';
+  $('create').hidden=true;$('detail').hidden=true;$('strategy-delivery').hidden=true;$('modelSettings').hidden=false;
+  err();drawRuns();loadModels(true).catch(e=>err(e.message));
+};
+keyForm.onsubmit=e=>{
+  e.preventDefault();
+  if(keyForm.dataset.saving||!modelSettings?.writable)return;
+  const key=keyForm.elements.key.value;keyForm.elements.key.value='';
+  void saveModelSettings({action:'connect',key},keyForm);
+};
+$('disconnectModel').onclick=()=>saveModelSettings({action:'disconnect'},keyForm);
+$('chatGPTStart').onclick=()=>saveModelSettings({action:'chatgpt-start'},keyForm);
+$('chatGPTCancel').onclick=()=>saveModelSettings({action:'chatgpt-cancel'},keyForm);
+$('chatGPTDisconnect').onclick=()=>saveModelSettings({action:'chatgpt-disconnect'},keyForm);
+$('refreshModels').onclick=()=>loadModels(true).catch(e=>err(e.message));
+defaultsForm.onsubmit=e=>{
+  e.preventDefault();
+  if(!modelSettings?.writable)return;
+  const {model,thinking,speed}=defaultsForm.elements;
+  const selected=list.find(x=>modelKey(x)===model.value);
+  if(!selected)return;
+  void saveModelSettings({action:'defaults',model:selected.id,provider:selected.provider,thinking:thinking.value,speed:speed.value||null},defaultsForm);
+};
 function makeOption(value,title){const o=node('option',title);o.value=value;return o;}
 function stylePreset(){for(const e of document.querySelectorAll('.tunable'))e.hidden=form.elements.preset.value==='paper';}
-form.elements.model.onchange=setupModel;form.elements.preset.onchange=stylePreset;
-api('/models').then(r=>{list=r.models;form.elements.model.replaceChildren(...list.map(x=>makeOption(x.id,x.name||x.id)));setupModel();if(!list.length)err('MODEL_CREDENTIAL');}).catch(e=>err(e.message));
+form.elements.model.onchange=()=>setupModel(form);defaultsForm.elements.model.onchange=()=>setupModel(defaultsForm);form.elements.preset.onchange=stylePreset;
+loadModels(true).catch(e=>err(e.message));
 form.onsubmit=async e=>{
   e.preventDefault();err();
   const payload=Object.fromEntries(new FormData(form));payload.id=crypto.randomUUID();
-  if(!payload.model){err('MODEL_CREDENTIAL');return;}
+  const selected=list.find(x=>modelKey(x)===payload.model);
+  if(!selected){err('MODEL_CREDENTIAL');return;}
+  payload.model=selected.id;payload.provider=selected.provider;
   const b=form.querySelector('button[type=submit]');b.disabled=true;
   try{const r=await api('/runs',payload);refreshRuns();await open(r.id);}catch(e){err(e.message);}finally{b.disabled=false;}
 };
@@ -62,7 +143,8 @@ function chart(g,k){
 }
 function render(){
   if(!active)return;
-  $('create').hidden=true;$('detail').hidden=false;
+  strategyView();
+  $('modelSettings').hidden=true;$('create').hidden=true;$('detail').hidden=false;
   const r=active;const h=node('div',undefined,'heading');const title=node('div');title.append(node('h1',t(r.preset)),node('span',t(r.status),'pill'));h.append(title);
   const controls=node('div',undefined,'actions');for(const [verb,statuses] of [['pause',['queued','running']],['resume',['pausing','paused']],['stop',['queued','running','pausing','paused']]]){
     if(statuses.includes(r.status))controls.append(btn(verb,()=>api('/runs/'+r.id+'/actions',{action:verb}).catch(e=>err(e.message))));
@@ -106,8 +188,69 @@ function render(){
 function localize(){
   document.documentElement.lang=lang;
   for(const e of document.querySelectorAll('[data-i]'))e.textContent=t(e.dataset.i);
-  $('new').textContent='+ '+t('newRun');$('lang').value=lang;err(errorCode);drawRuns();render();
+  $('new').textContent='+ '+t('newRun');$('lang').value=lang;err(errorCode);if(modelSettings)showModels(false);drawRuns();render();
 }
+const strategyTargets={enabled:false,targets:[]};
+const buildForm=$('strategy-build'), backtestTarget=$('strategy-backtest-target'), deployTarget=$('strategy-deploy-target');
+const button=buildForm.querySelector('button');
+const targetName=id=>strategyTargets.targets.find(x=>x.id===id)?.label||id;
+const attempts=new Map();
+const acquire=(request)=>{
+  const key=JSON.stringify(request);
+  if(!attempts.has(key))attempts.set(key,crypto.randomUUID());
+  return [key,attempts.get(key)];
+};
+function strategyView(){
+  const section=$('strategy-delivery');
+  const available=Boolean(active&&strategyTargets.enabled&&strategyTargets.targets.length);
+  section.hidden=!available;
+  if(!available)return;
+  const ok=active.status==='completed'&&active.generations.some(g=>g.elites.length);
+  buildForm.hidden=!ok||!backtestTarget.options.length;
+  for(const key of ['start','end'])$('strategy-backtest-'+key).min=active.input.end;
+  const results=$('strategy-results');results.replaceChildren();
+  for(const item of Object.values(active.strategies||{})){
+    const sec=node('section',undefined,'panel');
+    sec.append(node('h3',item.plan?.title||t('strategyPackage')));
+    sec.append(node('p',[t('strategyBacktestTarget'),targetName(item.target),t('strategy_'+item.status)].join(' · ')));
+    if(item.error)sec.append(node('p',t(item.error),'problem'));
+    if(item.bundle){
+      const m=item.bundle.backtest.metrics;
+      sec.append(node('p',t('strategyFills')+': '+format(m.filledOrders)));
+      const metrics=node('details');metrics.append(node('summary',t('strategyBacktestMetrics')),node('pre',JSON.stringify(m,null,2)));sec.append(metrics);
+      const download=node('a',t('strategyDownload'),'button');download.href='/api/runs/'+active.id+'/strategies?download='+item.id;sec.append(download);
+      if(deployTarget.options.length)sec.append(btn('strategyPush',async()=>{
+        if(!deployTarget.value)return;
+        const runId=active.id;
+        try{await api('/runs/'+runId+'/strategies',{action:'push',id:item.id,target:deployTarget.value},$('strategy-token').value);}
+        catch(e){err(e.message);}
+      }));
+    }
+    for(const [id,operation] of Object.entries(item.deployments)){
+      sec.append(node('p',targetName(id)+' · '+t(operation.error||'strategy_'+operation.status)));
+    }
+    results.append(sec);
+  }
+}
+buildForm.onsubmit=async e=>{
+  e.preventDefault();
+  if(button.disabled||!active)return;
+  const request={action:'build',brief:$('strategy-brief').value,target:backtestTarget.value,start:$('strategy-backtest-start').value,end:$('strategy-backtest-end').value};
+  const [key,id]=acquire({run:active.id,...request});
+  button.disabled=true;
+  try{await api('/runs/'+active.id+'/strategies',{...request,id},$('strategy-token').value);attempts.delete(key);}
+  catch(e){err(e.message);}
+  finally{button.disabled=false;}
+};
+api('/strategy-targets').then(data=>{
+  Object.assign(strategyTargets,data);
+  for(const [role,select] of [['backtest',backtestTarget],['deploy',deployTarget]]){
+    select.replaceChildren(...data.targets.filter(x=>x.roles.includes(role)).map(x=>makeOption(x.id,x.label)));
+  }
+  $('strategy-deploy-target').closest('label').hidden=!deployTarget.options.length;
+  strategyView();
+}).catch(()=>{});
+
 $('lang').onchange=e=>{lang=e.target.value;localStorage.setItem('alpha.locale',lang);localize();};
 $('new').onclick=home;
 localize();stylePreset();refreshRuns();if(/^[0-9a-f-]{36}$/.test(location.hash.slice(1)))open(location.hash.slice(1));

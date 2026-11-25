@@ -16,7 +16,11 @@ jobs:
           python-version: '3.12'
       - run: npm ci --ignore-scripts
       - run: pip install -r quant/requirements.txt
+      - name: Ensure the isolated OpenSSH test runner is available
+        run: (test -x /usr/sbin/sshd && command -v bwrap) || (sudo apt-get update && sudo apt-get install -y openssh-server bubblewrap)
       - run: npm test
+        env:
+          ALPHA_TEST_SSH: '1'
       - name: Build image
         id: build
         run: docker build -t alphazonai:test .
