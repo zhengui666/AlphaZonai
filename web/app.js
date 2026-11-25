@@ -2,7 +2,7 @@ import {packs} from './locale.js';
 const $=id=>document.getElementById(id);
 const form=$('form'),defaultsForm=$('modelDefaultsForm'),keyForm=$('modelKeyForm');
 let lang=Object.hasOwn(packs,localStorage.getItem('alpha.locale'))?localStorage.getItem('alpha.locale'):'en';
-let runs=[],list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings;
+let runs=[],list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings,chatGPTPoll;
 const t=k=>packs[lang][k]||packs.en[k]||k;
 const node=(name,text,cls)=>{const e=document.createElement(name);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
 const format=v=>v==null?'—':typeof v==='number'?Intl.NumberFormat(lang,{maximumFractionDigits:5}).format(v):v;
@@ -29,8 +29,9 @@ async function open(id){
     stream.onmessage=e=>{if(selectedId!==id)return;active=JSON.parse(e.data);render();const i=runs.findIndex(r=>r.id===id);if(i>=0){runs[i].status=active.status;drawRuns();}};
   }catch(e){err(e.message);}
 }
+const modelKey=x=>(x.provider||'openai')+':'+(x.id||x.model);
 function setupModel(target,preferred){
-  const current=list.find(x=>x.id===target.elements.model.value);
+  const current=list.find(x=>modelKey(x)===target.elements.model.value);
   const levels=current?.thinking||['off'], speeds=current?.speed||[];
   const effort=preferred?.thinking??target.elements.thinking.value;
   const speed=preferred?.speed??target.elements.speed.value;
@@ -44,16 +45,34 @@ function showModels(preferDefaults){
   const pref=modelSettings?.defaults;
   for(const target of [form,defaultsForm]){
     const old=target.elements.model.value;
-    target.elements.model.replaceChildren(...list.map(x=>makeOption(x.id,x.name||x.id)));
-    const id=preferDefaults&&pref?.model?pref.model:old||pref?.model;
-    if(list.some(m=>m.id===id))target.elements.model.value=id;
-    setupModel(target,preferDefaults&&pref?.model===target.elements.model.value?pref:undefined);
+    target.elements.model.replaceChildren(...list.map(x=>makeOption(modelKey(x),(x.name||x.id)+' / '+(x.provider==='openai-codex'?'ChatGPT':'OpenAI API'))));
+    const prefKey=pref?.model?modelKey(pref):'';
+    const id=preferDefaults&&prefKey?prefKey:old||prefKey;
+    if(list.some(m=>modelKey(m)===id))target.elements.model.value=id;
+    setupModel(target,preferDefaults&&prefKey===target.elements.model.value?pref:undefined);
   }
   $('modelConnection').textContent=t(modelSettings?.connected?'modelConnected':'modelDisconnected');
   keyForm.elements.key.disabled=!modelSettings?.writable;
   keyForm.querySelector('[type=submit]').disabled=!modelSettings?.writable;
   $('disconnectModel').disabled=!modelSettings?.writable||!modelSettings?.stored;
   defaultsForm.querySelector('[type=submit]').disabled=!modelSettings?.writable||!list.length;
+  showChatGPT();
+}
+function showChatGPT(){
+  const local=modelSettings?.writable, connected=modelSettings?.chatGPTConnected, login=modelSettings?.chatGPT;
+  $('chatGPTActions').hidden=!local;
+  const pending=['starting','waiting'].includes(login?.status);
+  $('chatGPTStart').hidden=pending||connected;
+  $('chatGPTCancel').hidden=!pending;
+  $('chatGPTDisconnect').hidden=!connected;
+  $('chatGPTStatus').textContent=connected?t('chatGPTConnected'):login?.status==='failed'?t('chatGPTFailed'):'';
+  const code=login?.status==='waiting'?login.code:'';
+  $('chatGPTDevice').hidden=!code;
+  if(code){$('chatGPTCode').textContent=code;$('chatGPTLink').href=login.url;}
+  else {$('chatGPTCode').textContent='';$('chatGPTLink').removeAttribute('href');}
+  if(pending&&!chatGPTPoll){
+    chatGPTPoll=setTimeout(()=>{chatGPTPoll=undefined;loadModels(false).catch(e=>err(e.message));},2500);
+  }else if(!pending&&chatGPTPoll){clearTimeout(chatGPTPoll);chatGPTPoll=undefined;}
 }
 async function loadModels(preferDefaults){
   modelSettings=await api('/model-settings');
@@ -84,12 +103,17 @@ keyForm.onsubmit=e=>{
   void saveModelSettings({action:'connect',key},keyForm);
 };
 $('disconnectModel').onclick=()=>saveModelSettings({action:'disconnect'},keyForm);
+$('chatGPTStart').onclick=()=>saveModelSettings({action:'chatgpt-start'},keyForm);
+$('chatGPTCancel').onclick=()=>saveModelSettings({action:'chatgpt-cancel'},keyForm);
+$('chatGPTDisconnect').onclick=()=>saveModelSettings({action:'chatgpt-disconnect'},keyForm);
 $('refreshModels').onclick=()=>loadModels(true).catch(e=>err(e.message));
 defaultsForm.onsubmit=e=>{
   e.preventDefault();
   if(!modelSettings?.writable)return;
   const {model,thinking,speed}=defaultsForm.elements;
-  void saveModelSettings({action:'defaults',model:model.value,thinking:thinking.value,speed:speed.value||null},defaultsForm);
+  const selected=list.find(x=>modelKey(x)===model.value);
+  if(!selected)return;
+  void saveModelSettings({action:'defaults',model:selected.id,provider:selected.provider,thinking:thinking.value,speed:speed.value||null},defaultsForm);
 };
 function makeOption(value,title){const o=node('option',title);o.value=value;return o;}
 function stylePreset(){for(const e of document.querySelectorAll('.tunable'))e.hidden=form.elements.preset.value==='paper';}
@@ -98,7 +122,9 @@ loadModels(true).catch(e=>err(e.message));
 form.onsubmit=async e=>{
   e.preventDefault();err();
   const payload=Object.fromEntries(new FormData(form));payload.id=crypto.randomUUID();
-  if(!payload.model){err('MODEL_CREDENTIAL');return;}
+  const selected=list.find(x=>modelKey(x)===payload.model);
+  if(!selected){err('MODEL_CREDENTIAL');return;}
+  payload.model=selected.id;payload.provider=selected.provider;
   const b=form.querySelector('button[type=submit]');b.disabled=true;
   try{const r=await api('/runs',payload);refreshRuns();await open(r.id);}catch(e){err(e.message);}finally{b.disabled=false;}
 };

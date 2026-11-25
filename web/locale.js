@@ -3,6 +3,8 @@ const zh={language:'语言',runs:'运行记录',newRun:'新建运行',preset:'�
 Object.assign(en,{
   modelSettings:'Model settings',modelApiKey:'OpenAI API key',connectModel:'Connect',
   disconnectModel:'Disconnect',refreshModels:'Refresh models',saveModelDefaults:'Save defaults',
+  chatGPTStart:'Sign in with ChatGPT',chatGPTCancel:'Cancel sign-in',chatGPTDisconnect:'Disconnect ChatGPT',
+  chatGPTOpen:'Open the sign-in page and enter this code:',chatGPTConnected:'ChatGPT connected',chatGPTFailed:'ChatGPT sign-in failed',
   modelConnected:'OpenAI connected',modelDisconnected:'OpenAI not connected',modelSaved:'Model defaults saved',
   speed:'Reasoning speed',providerDefault:'Provider default',MODEL_SETTINGS_LOCAL:'Open model settings on this computer',
   MODEL_KEY_INVALID:'The API key was rejected',MODEL_CONNECTION_FAILED:'Cannot connect to OpenAI',
@@ -11,6 +13,8 @@ Object.assign(en,{
 Object.assign(zh,{
   modelSettings:'模型设置',modelApiKey:'OpenAI API Key',connectModel:'连接',
   disconnectModel:'断开',refreshModels:'刷新模型',saveModelDefaults:'保存默认值',
+  chatGPTStart:'登录 ChatGPT',chatGPTCancel:'取消登录',chatGPTDisconnect:'断开 ChatGPT',
+  chatGPTOpen:'打开登录页面并输入此代码：',chatGPTConnected:'ChatGPT 已连接',chatGPTFailed:'ChatGPT 登录失败',
   modelConnected:'OpenAI 已连接',modelDisconnected:'OpenAI 未连接',modelSaved:'已保存默认模型设置',
   speed:'推理速度',providerDefault:'服务默认',MODEL_SETTINGS_LOCAL:'请在运行服务的本机打开模型设置',
   MODEL_KEY_INVALID:'API Key 无效或没有访问权限',MODEL_CONNECTION_FAILED:'无法连接 OpenAI',

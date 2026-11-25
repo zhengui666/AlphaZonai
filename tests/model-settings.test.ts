@@ -4,6 +4,7 @@ import {mkdtemp,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createModels} from '@earendil-works/pi-ai/models';
+import {openaiCodexProvider} from '@earendil-works/pi-ai/providers/openai-codex';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import {choice,isLocalSettingsHost,modelStore,modelView,providerSpeed} from '../src/model-settings.ts';
 
@@ -42,4 +43,14 @@ test('model choices reject unsupported intensity and map only supported service 
   assert.equal(providerSpeed(payload,{provider:'other',api:'responses'},'priority'),payload);
   assert.equal(isLocalSettingsHost('127.0.0.1:25447'),true);
   assert.equal(isLocalSettingsHost('127.0.0.1.example.org'),false);
+});
+
+test('ChatGPT choices are distinct from API models with the same id',()=>{
+  const cp=openaiCodexProvider().getModels()[0], ap=openaiProvider().getModels()[0];
+  const api={...modelView(ap),id:cp.id};
+  const subscription=modelView(cp);
+  const selected=choice({provider:'openai-codex',model:cp.id,thinking:'off',speed:'priority'},[api,subscription]);
+  assert.equal(selected.provider,'openai-codex');
+  assert.deepEqual(providerSpeed({model:cp.id},cp,selected.speed),{model:cp.id,service_tier:'priority'});
+  assert.equal(choice({model:cp.id},[api,subscription]).provider,'openai');
 });

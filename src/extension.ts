@@ -244,11 +244,11 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
   });
   return {Run,extension:defineExtension({name:'alphazonai',tasks:[Run,Gen,CandidateTask],hooks:[hook(GenerationTask,{beforeProviderRequest:async (request,api,ctx)=>{
     const options=await api.snapshot(Request,api.conversationId,ctx);
-    if(!options||request.model.api!=='openai-responses'||!request.payload||typeof request.payload!=='object')return;
-    const payload=providerSpeed({...request.payload,...(options.maxTokens?{max_output_tokens:options.maxTokens}:{})},request.model,options.speed);
+    if(!options||!['openai-responses','openai-codex-responses'].includes(request.model.api)||!request.payload||typeof request.payload!=='object')return;
+    const payload=providerSpeed({...request.payload,...(request.model.api==='openai-responses'&&options.maxTokens?{max_output_tokens:options.maxTokens}:{})},request.model,options.speed);
     // Reasoning endpoints do not uniformly accept temperature. Only apply it when
     // the active provider model declares explicit sampling support, or is non-reasoning.
-    if(options.temperature!=null&&(!request.model.reasoning||request.model.id.startsWith('gpt-oss-')))payload.temperature=options.temperature;
+    if(request.model.api==='openai-responses'&&options.temperature!=null&&(!request.model.reasoning||request.model.id.startsWith('gpt-oss-')))payload.temperature=options.temperature;
     return {payload};
   }})]})};
 }

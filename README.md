@@ -39,7 +39,7 @@ market data, trained models, backtest results, or returns.
 ## Model settings
 
 On the machine hosting the service, open **Model settings** to connect an
-OpenAI API key and save defaults for the model, reasoning effort and speed.
+OpenAI API key or sign in to ChatGPT with Pi's device flow, then save defaults for the model, reasoning effort and speed.
 An `OPENAI_API_KEY` supplied by the host still works. The key saved in the UI
 overrides the environment key; disconnect only deletes the key saved by the
 UI. Keys are not returned to the browser or passed into factor processes.
