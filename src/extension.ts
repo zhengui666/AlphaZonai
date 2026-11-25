@@ -23,6 +23,7 @@ export type Driver = {
   score:(code:string,config:any,signal:AbortSignal)=>Promise<any>;
 };
 const internalSkill=new URL('../skills/cogalpha/SKILL.md', import.meta.url);
+const strategySkill=new URL('../skills/strategy/SKILL.md',import.meta.url);
 const bridge=fileURLToPath(new URL('../quant/bridge.py',import.meta.url));
 function python(phase:string,config:any,body:any,signal:AbortSignal) {
   return new Promise<any>((resolve,reject)=>{
@@ -45,7 +46,7 @@ export const nautilus:Driver={
 class WorkflowError extends Error {}
 type Ask=(api:any,ctx:any,id:string,prompt:string,sampling?:number)=>Promise<string>;
 const piAsk:Ask=async (api,ctx,id,prompt,sampling)=>{
-  const skill=(await readFile(internalSkill,'utf8')).replace(/^---[\s\S]*?---\s*/, '').trim();
+  const skill=(await readFile(id==='strategy:plan'?strategySkill:internalSkill,'utf8')).replace(/^---[\s\S]*?---\s*/, '').trim();
   let cid;
   await api.commit(async (tx:any)=>{
     const calls=await tx.doc(Calls,api.taskId);

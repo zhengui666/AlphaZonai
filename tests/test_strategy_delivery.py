@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -76,3 +77,6 @@ class StrategyDeliveryTest(unittest.TestCase):
             self.assertEqual(json.loads((stage_dir / ID / "importable-strategy.json").read_text()), result["strategy"])
             self.assertEqual((stage_dir / ID / "alpha_signal_strategy.py").read_text(), result["source"])
             self.assertEqual(sorted(x.name for x in stage_dir.iterdir()), [ID])
+            if os.environ.get("ALPHA_TEST_SSH") == "1":
+                from ssh_receiver import exercise_ssh
+                exercise_ssh(root, backtest, live, {**req, "id": ID}, result["source"])

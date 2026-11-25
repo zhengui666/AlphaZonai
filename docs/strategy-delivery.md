@@ -122,6 +122,12 @@ backtest, not silent rewriting on the deployment machine.
   Close-based stops are strategy decisions at bar arrival, not exchange-hosted
   guaranteed stop orders. Native risk and exchange constraints still apply.
 
+Position sizing limits the number of concurrent positions and starts each new
+position at or below its operator-configured instrument quantity. Quantities
+are not a cross-asset notional budget. Set a separate aggregate risk budget
+in the intended Nautilus account or risk configuration; the v1 strategy does
+not enforce a currency-converted portfolio notional cap.
+
 ## Protocol
 
 - `GET /api/strategy-targets` returns only target IDs, display names and roles.
@@ -145,8 +151,9 @@ backtest, not silent rewriting on the deployment machine.
 The receiver round-trip test writes native Catalog data, executes the native
 backtest, confirms actual fills and stages the exact native config on a
 different receiver profile. It exercises repeated delivery and mismatched
-market configuration. This does not connect to a real exchange or measure
-strategy returns. An infrastructure acceptance can repeat the same protocol
+market configuration. GitHub CI additionally retries the protocol through a loopback OpenSSH server,
+with independently restricted keys for the backtest and deployment profiles.
+This does not connect to a real exchange or measure strategy returns. An infrastructure acceptance can repeat the same protocol
 with two SSH hosts, configured Catalog data and a selected receiver identity.
 No release claim should say a remote site or live account has been tested
 unless its receipt was independently observed.
