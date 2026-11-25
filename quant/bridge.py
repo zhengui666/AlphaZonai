@@ -35,6 +35,9 @@ def _run_factor(script, features, timeout):
          "--ro-bind",str(HERE/"factor.py"),"/work/factor.py",
          "--ro-bind",str(script),"/work/source.py",
          "--ro-bind",str(features),"/work/features.parquet",
+         # The image installs CPython's shared library in this read-only path.
+         # The isolated root does not include the host's ld.so.cache.
+         "--setenv","LD_LIBRARY_PATH","/usr/local/lib",
          "--setenv","OPENBLAS_NUM_THREADS","1","--setenv","OMP_NUM_THREADS","1"]
     if not str(RUNTIME).startswith("/usr/") and RUNTIME != Path("/usr"):
         cmd += ["--ro-bind",str(RUNTIME),str(RUNTIME)]
