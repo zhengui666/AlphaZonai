@@ -81,7 +81,7 @@ const server=createServer(async (req,res)=>{
     }
     if(method==='POST'&&(path==='/api/runs'||/^\/api\/runs\/[0-9a-f-]{36}\/(actions|strategies)$/.test(path))){
       const isStrategy=path.endsWith('/strategies');
-      const problem=agentWriteError({origin:req.headers.origin,browser:req.headers['sec-fetch-mode'],
+      const problem=agentWriteError({origin:req.headers.origin,browser:req.headers['sec-fetch-site'],
         authorization:req.headers.authorization,localHost:isStrategy||isLocalSettingsHost(req.headers.host)},
         isStrategy?undefined:process.env.ALPHA_AGENT_TOKEN);
       if(problem)return send(res,problem==='WEB_READ_ONLY'?403:401,{error:problem});

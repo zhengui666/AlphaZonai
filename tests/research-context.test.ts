@@ -19,7 +19,7 @@ test('research direction is optional, immutable for retries, and not a holding-p
 test('agent write paths separate browser use, local CLI and configured bearer auth',()=>{
   const localHost=true;
   assert.equal(agentWriteError({localHost,origin:'http://localhost:25447'}),'WEB_READ_ONLY');
-  assert.equal(agentWriteError({localHost,browser:'cors',authorization:'Bearer one'},'one'),'WEB_READ_ONLY');
+  assert.equal(agentWriteError({localHost,browser:'same-origin',authorization:'Bearer one'},'one'),'WEB_READ_ONLY');
   assert.equal(agentWriteError({localHost}),null);
   assert.equal(agentWriteError({localHost:false}),'AGENT_AUTH_REQUIRED');
   assert.equal(agentWriteError({localHost,authorization:'Bearer two'},'one'),'AGENT_AUTH_REQUIRED');
