@@ -1,0 +1,27 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --ignore-scripts
+      - run: pip install -r quant/requirements.txt
+      - run: npm test
+      - name: Build image
+        id: build
+        run: docker build -t alphazonai:test .
+      - name: Start image and read health
+        run: bash tests/check_image.sh alphazonai:test http
+      - name: Execute isolated factor inside the built image
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash tests/check_image.sh alphazonai:test isolated
