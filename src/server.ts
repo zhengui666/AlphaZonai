@@ -7,14 +7,20 @@ import {Harness,createRegistry,configure} from '@earendil-works/pi-durable';
 import {openNodeSqliteStorage} from '@earendil-works/pi-durable/storage/sqlite/node';
 import {createModels} from '@earendil-works/pi-ai/models';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
-import {createCogAlpha,Runs,Resume} from './extension.ts';
+import {openaiCodexProvider} from '@earendil-works/pi-ai/providers/openai-codex';
+import {createCogAlpha,Runs,Resume,setModelSpeed} from './extension.ts';
 import {paper,minute} from './method.ts';
+import {chatGPTLogin,checkOpenAIKey,choice,isLocalSettingsHost,modelStore,modelView,recordedStrategyModel} from './model-settings.ts';
+
 import {authorizedStrategyWrite,readTargets,strategyEvidence,strategyId} from './strategy.ts';
 
 const state=resolve(process.env.ALPHA_STATE||'state');
 const catalog=resolve(process.env.ALPHA_CATALOG||'/catalog');
-const models=createModels();
+const modelPrefs=modelStore(state);
+const models=createModels({credentials:modelPrefs.credentials});
 models.setProvider(openaiProvider());
+models.setProvider(openaiCodexProvider());
+const chatGPT=chatGPTLogin(models);
 const registry=createRegistry();
 const {extension,Run,StrategyBuild,StrategyPush}=createCogAlpha();
 registry.install(extension);
@@ -32,16 +38,22 @@ async function body(req:any){
   let data='';for await(const b of req){data+=b;if(data.length>16000)throw new Error('BAD_REQUEST');}
   try{return JSON.parse(data);}catch{throw new Error('BAD_REQUEST');}
 }
-function input(raw:any){
+const availableModels=async()=>(await models.getAvailable()).map(modelView);
+async function settings(local:boolean){
+  const stored=await modelPrefs.savedKey();
+  return {connected:Boolean(await models.checkAuth('openai')),stored,chatGPTConnected:await modelPrefs.savedChatGPT(),
+    chatGPT:local?chatGPT.view():null,defaults:await modelPrefs.defaults(),models:await availableModels(),writable:local};
+}
+async function input(raw:any){
   const validDate=(x:unknown)=>typeof x==='string'&&/^\d{4}-\d\d-\d\d$/.test(x)&&Number.isFinite(Date.parse(x))&&new Date(x).toISOString().slice(0,10)===x;
   if(!raw||!['paper','minute'].includes(raw.preset)||!validDate(raw.start)||!validDate(raw.end)||raw.start>=raw.end)throw new Error('INVALID_DATES');
   const horizon=Number(raw.horizon),seed=Number(raw.seed);
   if(!Number.isSafeInteger(horizon)||horizon<1||!Number.isSafeInteger(seed))throw new Error('BAD_REQUEST');
-  if(typeof raw.model!=='string'||!raw.model||raw.model.length>128)throw new Error('MODEL_REQUIRED');
-  const model=models.getModels('openai').find(x=>x.id===raw.model);
-  if(!model)throw new Error('MODEL_UNKNOWN');
-  const thinking=typeof raw.thinking==='string'?raw.thinking:'off';
-  if(thinking!=='off'&&(!model.reasoning||!model.thinkingLevelMap?.[thinking]))throw new Error('THINKING_UNSUPPORTED');
+  const defaults=await modelPrefs.defaults();
+  const available=await availableModels();
+  if(!available.length)throw Error('MODEL_CREDENTIAL');
+  const selected=choice({provider:raw.provider??(raw.model?'openai':defaults?.provider),model:raw.model||defaults?.model,thinking:raw.thinking??defaults?.thinking,
+    speed:raw.speed===''?null:raw.speed??defaults?.speed},available);
   const rules={...(raw.preset==='paper'?paper:minute)};
   for(const key of ['parallel','generations','plateauWindow'] as const){
     const num=raw[key];
@@ -51,7 +63,7 @@ function input(raw:any){
       rules[key]=n;
     }
   }
-  return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',model:raw.model,thinking,start:raw.start,end:raw.end,horizon,seed,rules};
+  return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',...selected,start:raw.start,end:raw.end,horizon,seed,rules};
 }
 function strategyDate(x:any){
   if(typeof x!=='string'||!/^\d{4}-\d\d-\d\d$/.test(x)||!Number.isFinite(Date.parse(x)))return null;
@@ -71,28 +83,45 @@ const server=createServer(async (req,res)=>{
       const targets=await readTargets();
       return send(res,200,{targets:targets.map(({id,label,roles})=>({id,label,roles})),enabled:Boolean(process.env.ALPHA_STRATEGY_TOKEN)});
     }
-    if(path==='/api/models'&&method==='GET'){
-      const list=await models.getAvailable('openai');
-      return send(res,200,{models:list.map(m=>({id:m.id,name:m.name,thinking:['off',...Object.keys(m.thinkingLevelMap||{}).filter(k=>k!=='off'&&m.reasoning)]}))});
+    if(path==='/api/models'&&method==='GET')return send(res,200,{models:await availableModels()});
+    if(path==='/api/model-settings'&&method==='GET')return send(res,200,await settings(isLocalSettingsHost(req.headers.host)));
+    if(path==='/api/model-settings'&&method==='POST'){
+      if(!isLocalSettingsHost(req.headers.host)||!req.headers.origin)return send(res,403,{error:'MODEL_SETTINGS_LOCAL'});
+      const raw=await body(req);
+      if(raw?.action==='connect'){
+        const key=await checkOpenAIKey(raw.key);
+        await modelPrefs.credentials.modify('openai',async()=>({type:'api_key',key}));
+      }else if(raw?.action==='disconnect'){
+        await modelPrefs.credentials.delete('openai');
+      }else if(raw?.action==='chatgpt-start'){
+        chatGPT.start();
+      }else if(raw?.action==='chatgpt-cancel'){
+        chatGPT.cancel();
+      }else if(raw?.action==='chatgpt-disconnect'){
+        chatGPT.cancel();await models.logout('openai-codex');
+      }else if(raw?.action==='defaults'){
+        await modelPrefs.save(choice(raw,await availableModels()));
+      }else throw Error('BAD_REQUEST');
+      return send(res,200,await settings(true));
     }
     if(path==='/api/runs'&&method==='GET'){
       const runs=await snapshot();
       return send(res,200,Object.values(runs).map(({id,preset,status,created,current,progress})=>({id,preset,status,created,current,progress})).reverse());
     }
     if(path==='/api/runs'&&method==='POST'){
-      const raw=await body(req),config=input(raw);
-      if(process.env.OPENAI_API_KEY===undefined)return send(res,400,{error:'MODEL_CREDENTIAL'});
+      const raw=await body(req),config=await input(raw);
       const id=raw.id;
       if(typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id))throw new Error('BAD_REQUEST');
       await root.commit(async tx=>{
         const runs=(await tx.doc(Runs,root.id)).runs;
         if(runs[id])return;
         const conversation=await tx.createConversation({ownership:{kind:'ownerless'}});
-        await configure(tx,conversation.id,{model:{provider:'openai',modelId:config.model},thinkingLevel:config.thinking,maxTurns:1,tools:[]});
+        await configure(tx,conversation.id,{model:{provider:config.provider,modelId:config.model},thinkingLevel:config.thinking,maxTurns:1,tools:[]});
+        await setModelSpeed(tx,conversation.id,config.speed);
         // The run owns Agent work in a separate configured conversation; records
         // are surfaced via the root Pi document using that address in the input.
         const task=await tx.createTask(Run,{...config,id,docId:root.id},{ownership:{kind:'conversation'},conversationId:conversation.id});
-        runs[id]={id,task,preset:config.preset,model:config.model,thinking:config.thinking,input:{start:config.start,end:config.end,horizon:config.horizon,seed:config.seed,barSpec:config.barSpec},status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
+        runs[id]={id,task,preset:config.preset,provider:config.provider,model:config.model,thinking:config.thinking,speed:config.speed,input:{start:config.start,end:config.end,horizon:config.horizon,seed:config.seed,barSpec:config.barSpec},status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
       },ctx);
       harness.resume();
       return send(res,202,{id});
@@ -111,7 +140,9 @@ const server=createServer(async (req,res)=>{
         const selectedTarget=(await readTargets()).find(x=>x.id===raw.target);
         if(!selectedTarget?.roles.includes(raw.action==='build'?'backtest':'deploy'))return send(res,404,{error:'STRATEGY_TARGET_MISSING'});
         if(raw.action==='build'){
-          if(!process.env.OPENAI_API_KEY)return send(res,400,{error:'MODEL_CREDENTIAL'});
+          const provider=run.provider??'openai';
+          if(!await models.checkAuth(provider))return send(res,400,{error:'MODEL_CREDENTIAL'});
+          const tracked=recordedStrategyModel(run,await availableModels());
           if(run.status!=='completed')return send(res,409,{error:'STRATEGY_RUN_INCOMPLETE'});
           if(raw.brief!==undefined&&(typeof raw.brief!=='string'||raw.brief.length>2000))return send(res,400,{error:'BAD_REQUEST'});
           const brief=(raw.brief??'').trim();
@@ -126,10 +157,11 @@ const server=createServer(async (req,res)=>{
             const existing=r.strategies[raw.id];
             if(existing)return existing.target===raw.target&&existing.start===start&&existing.end===end&&existing.brief===brief;
             const conversation=await tx.createConversation({ownership:{kind:'ownerless'}});
-            await configure(tx,conversation.id,{model:{provider:'openai',modelId:r.model},thinkingLevel:r.thinking,maxTurns:1,tools:[]});
-            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence,brief,marketContext:selectedTarget.marketContext??'',researchBarSpec:r.input.barSpec},
+            await configure(tx,conversation.id,{model:{provider:tracked.provider,modelId:tracked.model},thinkingLevel:tracked.thinking,maxTurns:1,tools:[]});
+            await setModelSpeed(tx,conversation.id,tracked.speed);
+            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence,brief,marketContext:selectedTarget.marketContext??'',researchBarSpec:r.input.barSpec,modelSettings:tracked},
               {ownership:{kind:'conversation'},conversationId:conversation.id});
-            r.strategies[raw.id]={task,id:raw.id,status:'generating',target:raw.target,start,end,brief,deployments:{}};
+            r.strategies[raw.id]={task,id:raw.id,status:'generating',target:raw.target,start,end,brief,modelSettings:tracked,deployments:{}};
             return true;
           },ctx);
           if(!result)return send(res,409,{error:'STRATEGY_ID_CONFLICT'});
@@ -157,7 +189,7 @@ const server=createServer(async (req,res)=>{
         const selected=new Set(run.generations.flatMap((g:any)=>g.elites));
         const rows=run.generations.flatMap((g:any)=>g.rows).filter((x:any)=>selected.has(x.id)).map((x:any)=>({id:x.id,parents:x.parents,scores:x.scores,...x.revisions.at(-1)}));
         res.setHeader('Content-Disposition','attachment; filename="alphazonai-factors.json"');
-        return send(res,200,{schemaVersion:1,run:id,preset:run.preset,model:run.model,input:run.input,coverage:run.coverage??null,factors:rows});
+        return send(res,200,{schemaVersion:1,run:id,preset:run.preset,provider:run.provider??'openai',model:run.model,thinking:run.thinking,speed:run.speed??null,input:run.input,coverage:run.coverage??null,factors:rows});
       }
       if(action==='events'&&method==='GET'){
         const watch=await harness.watchDoc(Runs,root.id,ctx);
@@ -186,7 +218,7 @@ const server=createServer(async (req,res)=>{
     }
     return send(res,404,{error:'NOT_FOUND'});
   } catch(e:any){
-    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED'];
+    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED','SPEED_UNSUPPORTED','MODEL_KEY_INVALID','MODEL_CONNECTION_FAILED','MODEL_CREDENTIAL'];
     if(!known.includes(e.message))console.error(e);
     if(!res.headersSent)send(res,known.includes(e.message)?400:500,{error:known.includes(e.message)?e.message:'SERVER_ERROR'});
     else res.end();

@@ -4,15 +4,15 @@ CogAlpha search and evolution on Pi Durable, with NautilusTrader market data.
 
 - Start, pause, stop and resume research runs.
 - Inspect candidate code, reviews, scores, and ancestry.
-- Export candidate factors and turn shortlisted research into a Nautilus strategy.
-- Generate free-form native strategies via Pi Durable, then backtest against one Nautilus instance and stage an inactive strategy on another.
+- Export research factors or generate a free-form native Nautilus strategy.
+- Backtest on one configured instance and stage an inactive package on another.
 - English and Simplified Chinese.
 
 ## Run
 
 Pull the GHCR image for a published version. Mount the existing NautilusTrader
-catalog read-only and keep a persistent state volume. Set `OPENAI_API_KEY` in
-your shell or an environment file outside the repository.
+catalog read-only and keep a persistent state volume. Optionally set
+`OPENAI_API_KEY` outside the repository, or connect a provider in Model Settings.
 
 ```sh
 docker run --rm -p 127.0.0.1:8787:8787 \
@@ -42,3 +42,18 @@ operator configuration, protocol and runtime requirements.
 Based on [Cognitive Alpha Mining via LLM-Driven Code-Based Evolution](https://aclanthology.org/2026.acl-long.538/).
 The application implements the search method. It does not reproduce the authors'
 market data, trained models, backtest results, or returns.
+
+## Model settings
+
+On the machine hosting the service, open **Model settings** to connect an
+OpenAI API key or sign in to ChatGPT with Pi's device flow, then save defaults for the model, reasoning effort and speed.
+An `OPENAI_API_KEY` supplied by the host still works. The key saved in the UI
+overrides the environment key; disconnect only deletes the key saved by the
+UI. Keys are not returned to the browser or passed into factor processes.
+
+Choices come from the installed Pi provider, not a separate list in
+AlphaZonai. A new run records these choices, and changes to defaults do not
+change an existing run. **Standard** requests OpenAI's default tier; **Fast**
+requests the priority tier and may cost more or be unavailable for an account.
+**Provider default** doesn't send a speed override. Configure via the loopback
+deployment URL (or an SSH tunnel) and do not expose the service directly.

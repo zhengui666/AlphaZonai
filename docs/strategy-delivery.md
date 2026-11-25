@@ -14,7 +14,9 @@ remote.
 2. Select a configured **Backtest target** and later UTC date range. Choose
    Add an optional free-text strategy brief, then choose **Generate and backtest**. The model receives recent shortlisted factor
    formulas, source, and scores as evidence, not executable instructions.
-3. Pi Durable generates a standalone native Python module, its strategy class,
+3. The build inherits the run's connected provider (OpenAI API or ChatGPT via
+   Pi's Codex OAuth), model, reasoning intensity and service tier. Defaults
+   changed after the run do not alter a build. Pi Durable generates a standalone native Python module, its strategy class,
    config class and configuration values. The code can implement any native
    strategy compatible with the available Nautilus data and dependencies. There
    is no compiled-in menu of strategies, indicators, long-only assumptions,
