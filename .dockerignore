@@ -1,0 +1,5 @@
+.git
+node_modules
+state
+.env*
+**/__pycache__

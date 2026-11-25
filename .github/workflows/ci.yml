@@ -1,0 +1,25 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --ignore-scripts
+      - run: pip install -r quant/requirements.txt
+      - run: npm test
+      - run: docker build -t alphazonai:test .
+      - name: Start image and read health
+        run: |
+          docker run -d --name alphazonai-test -p 127.0.0.1:8787:8787 alphazonai:test
+          trap 'docker logs alphazonai-test; docker rm -f alphazonai-test' EXIT
+          curl -fsS --retry 8 --retry-connrefused http://127.0.0.1:8787/api/runs
