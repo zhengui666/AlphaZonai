@@ -53,7 +53,6 @@ UI. Keys are not returned to the browser or passed into factor processes.
 
 Choices come from the installed Pi provider, not a separate list in
 AlphaZonai. A new run records these choices, and changes to defaults do not
-change an existing run. **Standard** requests OpenAI's default tier; **Fast**
-requests the priority tier and may cost more or be unavailable for an account.
+change an existing run. **Standard** requests OpenAI's default tier; **Fast** requests the priority tier only for [documented API models](https://openai.com/api-fast-mode/). Account eligibility and the effective tier can differ. ChatGPT subscriptions do not use that API pricing matrix.
 **Provider default** doesn't send a speed override. Configure via the loopback
 deployment URL (or an SSH tunnel) and do not expose the service directly.

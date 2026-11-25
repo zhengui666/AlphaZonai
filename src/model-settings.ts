@@ -9,8 +9,21 @@ export type ModelProvider='openai'|'openai-codex';
 export type ModelChoice={provider:ModelProvider;model:string;thinking:string;speed:ServiceTier|null};
 type State=Partial<Record<ModelProvider,Credential>> & {defaults?:ModelChoice};
 const providerId=(id:string):id is ModelProvider=>id==='openai'||id==='openai-codex';
-export function speedTiers(model:{provider:string;api:string}):ServiceTier[]{
-  return (model.provider==='openai'&&model.api==='openai-responses')||(model.provider==='openai-codex'&&model.api==='openai-codex-responses') ? ['default','priority'] : [];
+// Model discovery is owned by Pi. This separate metadata records documented
+// API speed eligibility, not the models offered to a user or account entitlements.
+// Source: https://openai.com/api-fast-mode/
+const documentedApiFast=new Set([
+  'gpt-6.2-astra','gpt-6.2-sol','gpt-6-astra','gpt-6.1-sol','gpt-6.1-terra','gpt-6-sol','gpt-6-luna',
+  'gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna','gpt-5.5','gpt-5.4-mini','gpt-5.4','gpt-5.2','gpt-5.1',
+  'gpt-5','gpt-5-mini','gpt-5.1-codex','gpt-5-codex','gpt-4.1','gpt-4.1-mini','gpt-4.1-nano',
+  'gpt-4o','gpt-4o-2024-11-20','gpt-4o-2024-08-06','gpt-4o-2024-05-13','gpt-4o-mini','o3','o4-mini',
+]);
+type SpeedModel={id?:string;provider:string;api:string};
+export function speedTiers(model:SpeedModel):ServiceTier[]{
+  if(model.provider==='openai'&&model.api==='openai-responses')
+    return model.id&&documentedApiFast.has(model.id)?['default','priority']:['default'];
+  // Published API pricing does not attest eligibility on a ChatGPT subscription.
+  return model.provider==='openai-codex'&&model.api==='openai-codex-responses'?['default']:[];
 }
 export function modelView(model:Parameters<typeof getSupportedThinkingLevels>[0]){
   return {id:model.id,provider:model.provider,name:model.name,thinking:getSupportedThinkingLevels(model),speed:speedTiers(model)};
@@ -31,7 +44,7 @@ export function recordedStrategyModel(run:{provider?:string;model:string;thinkin
   available:ReturnType<typeof modelView>[]):ModelChoice {
   return choice({provider:run.provider??'openai',model:run.model,thinking:run.thinking,speed:run.speed??null},available);
 }
-export function providerSpeed(payload:Record<string,unknown>, model:{provider:string;api:string}, speed:unknown){
+export function providerSpeed(payload:Record<string,unknown>, model:SpeedModel, speed:unknown){
   return (speed==='default'||speed==='priority')&&speedTiers(model).includes(speed)
     ? {...payload,service_tier:speed} : payload;
 }
