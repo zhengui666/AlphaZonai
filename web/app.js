@@ -1,34 +1,322 @@
 import {packs} from './locale.js';
+
 const $=id=>document.getElementById(id);
-const form=$('form'),defaultsForm=$('modelDefaultsForm'),keyForm=$('modelKeyForm');
+const defaultsForm=$('modelDefaultsForm'),keyForm=$('modelKeyForm');
 let lang=Object.hasOwn(packs,localStorage.getItem('alpha.locale'))?localStorage.getItem('alpha.locale'):'en';
-let runs=[],list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings,chatGPTPoll;
+let runs=[],loaded=false,list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings,chatGPTPoll,view,routeVersion=0;
+const targets=new Map();
 const t=k=>packs[lang][k]||packs.en[k]||k;
-const node=(name,text,cls)=>{const e=document.createElement(name);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
-const format=v=>v==null?'—':typeof v==='number'?Intl.NumberFormat(lang,{maximumFractionDigits:5}).format(v):v;
-const btn=(k,fn,cls)=>{const b=node('button',t(k),cls);b.type='button';b.onclick=fn;return b;};
+const node=(name,text,cls)=>{const el=document.createElement(name);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;};
+const number=(v,digits=5)=>v==null?'—':typeof v==='number'?new Intl.NumberFormat(lang,{maximumFractionDigits:digits}).format(v):v;
+const date=v=>{
+  if(!v)return '—';
+  const parsed=new Date(v);
+  return Number.isNaN(parsed.getTime())?v:new Intl.DateTimeFormat(lang,{year:'numeric',month:'short',day:'numeric',timeZone:'UTC'}).format(parsed);
+};
+const makeOption=(value,text)=>{const el=node('option',text);el.value=value;return el;};
+const take=(arr=[])=>Array.isArray(arr)?arr:[];
+const state=(s,style=s)=>node('span',t(s||'empty'),'state '+(/^[-a-z_]+$/.test(style||'')?style:''));
+const link=(text,url,cls)=>{const el=node('a',text,cls);el.href=url;return el;};
+function lookup(k){return t('metric_'+k)==='metric_'+k?k.replaceAll('_',' '):t('metric_'+k);}
 function err(code){errorCode=code;$('error').hidden=!code;$('error').textContent=code?t(code):'';}
-async function api(path,body,token){
-  const r=await fetch('/api'+path,body?{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(body)}:{});
-  const j=await r.json();if(!r.ok)throw Error(j.error||'SERVER_ERROR');return j;
+async function api(path){
+  const r=await fetch('/api'+path);const payload=await r.json();
+  if(!r.ok)throw Error(payload.error||'SERVER_ERROR');return payload;
 }
-function refreshRuns(){api('/runs').then(r=>{runs=r;drawRuns();}).catch(e=>err(e.message));}
+async function updateModelSettings(body){
+  const r=await fetch('/api/model-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const payload=await r.json();if(!r.ok)throw Error(payload.error||'SERVER_ERROR');return payload;
+}
+const runTitle=r=>{
+  const dir=r.input?.direction?.trim()||r.direction?.trim();
+  return dir?([...dir].length>150?[...dir].slice(0,150).join('')+'…':dir):t(r.preset);
+};
+const hashFor=id=>'#run/'+encodeURIComponent(id);
+const runUrl=id=>'/api/runs/'+encodeURIComponent(id);
+const onAir=new Set(['queued','running','pausing']);
+
+function stat(label,value,detail){
+  const el=node('div',undefined,'stat');el.append(node('div',label,'label'),node('strong',value));
+  if(detail!=null)el.append(node('small',detail));return el;
+}
+function properties(rows){
+  const dl=node('dl',undefined,'properties');
+  for(const [label,value] of rows){const group=node('div');group.append(node('dt',label),node('dd',value==null?'—':value));dl.append(group);}
+  return dl;
+}
+function detailPanel(title,content){
+  const el=node('details',undefined,'disclosure');el.append(node('summary',title),content);return el;
+}
+function panel(title,content,className=''){
+  const el=node('section',undefined,'panel '+className);el.append(node('h2',title),content);return el;
+}
+function blank(text){
+  const el=node('div',undefined,'blank');el.append(node('span','∿','blank-icon'),node('h2',text));el.firstChild.setAttribute('aria-hidden','true');return el;
+}
+function table(headers,rows){
+  const el=node('table');const th=node('thead');const tr=node('tr');
+  for(const h of headers){const x=node('th',h);x.scope='col';tr.append(x);}th.append(tr);el.append(th);
+  const body=node('tbody');
+  for(const row of rows){const line=node('tr');for(const val of row){const cell=node('td');if(val instanceof Node)cell.append(val);else cell.textContent=val??'—';line.append(cell);}body.append(line);}
+  el.append(body);const wrapper=node('div',undefined,'table-scroll');wrapper.tabIndex=0;wrapper.append(el);return wrapper;
+}
+function mast(tag,title){
+  const header=node('header',undefined,'mast');header.append(node('div',tag,'eyebrow'),node('h1',title));return header;
+}
 function drawRuns(){
   $('runs').replaceChildren(...runs.map(r=>{
-    const b=btn(r.preset,()=>open(r.id),r.id===selectedId?'selected':'');
-    b.append(node('small',t(r.status)+' · '+new Date(r.created).toLocaleDateString(lang)));
-    return b;
+    const a=link(runTitle(r),hashFor(r.id),'report-link');
+    if(r.id===selectedId)a.setAttribute('aria-current','page');
+    a.replaceChildren(node('span',runTitle(r),'rail-title'),node('small',date(r.created)));
+    a.append(node('i',undefined,'status-dot '+(/^[-a-z]+$/.test(r.status)?r.status:'')));return a;
   }));
+  for(const [id,mode] of [['overviewLink','overview'],['modelSettingsButton','models']]){
+    if(view===mode)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');
+  }
 }
-function home(){$('strategy-delivery').hidden=true;selectedId=undefined;active=undefined;stream?.close();location.hash='';err();$('modelSettings').hidden=true;$('create').hidden=false;$('detail').hidden=true;drawRuns();}
-async function open(id){
-  $('strategy-delivery').hidden=true;
-  stream?.close();selectedId=id;active=undefined;generation=undefined;candidate=undefined;err();location.hash=id;
+function overview(){
+  const el=$('overviewContent');el.setAttribute('aria-busy',String(!loaded));
+  if(!loaded){el.replaceChildren(blank(t('loading')));return;}
+  if(!runs.length){el.replaceChildren(blank(t('noReports')));return;}
+  const stats=node('div',undefined,'stat-grid');
+  stats.append(stat(t('reports'),number(runs.length)),stat(t('activeRuns'),number(runs.filter(r=>onAir.has(r.status)).length)),stat(t('completed'),number(runs.filter(r=>r.status==='completed').length)));
+  const reportTable=table([t('research'),t('status'),t('generation'),t('created')],runs.map(r=>[
+    link(runTitle(r),hashFor(r.id),'record'),state(r.status),r.current!=null?number(r.current):'—',date(r.created),
+  ]));
+  el.replaceChildren(stats,panel(t('reports'),reportTable,'table-panel'));
+}
+async function refreshRuns(){
+  try{runs=take(await api('/runs'));loaded=true;drawRuns();if(view==='overview')overview();}
+  catch(e){err(e.message);}
+}
+async function open(id,version){
+  $('detail').replaceChildren(blank(t('loading')));
   try{
-    const r=await api('/runs/'+id);if(selectedId!==id)return;active=r;render();
-    stream=new EventSource('/api/runs/'+id+'/events');
-    stream.onmessage=e=>{if(selectedId!==id)return;active=JSON.parse(e.data);render();const i=runs.findIndex(r=>r.id===id);if(i>=0){runs[i].status=active.status;drawRuns();}};
-  }catch(e){err(e.message);}
+    const result=await api('/runs/'+encodeURIComponent(id));
+    if(selectedId!==id||version!==routeVersion)return;
+    active=result;render();
+    stream=new EventSource('/api/runs/'+encodeURIComponent(id)+'/events');
+    stream.onmessage=e=>{
+      if(selectedId!==id||version!==routeVersion)return;
+      try{
+        const next=JSON.parse(e.data);
+        if(next.id!==id||JSON.stringify(next)===JSON.stringify(active))return;
+        active=next;
+        const i=runs.findIndex(x=>x.id===id);
+        if(i>=0)runs[i]={...runs[i],direction:active.input?.direction,status:active.status,current:active.current};
+        drawRuns();render();
+      }catch{err('SERVER_ERROR');}
+    };
+  }catch(e){if(selectedId===id&&version===routeVersion){$('detail').replaceChildren(blank(t(e.message)));}}
+}
+function route(){
+  const version=++routeVersion;
+  const hash=location.hash.slice(1);
+  const id=hash.replace(/^run\//,'');
+  const prior=selectedId;
+  selectedId=/^[0-9a-f-]{36}$/i.test(id)?id:undefined;
+  view=selectedId?'run':hash==='models'?'models':'overview';
+  stream?.close();stream=undefined;err();
+  $('overview').hidden=view!=='overview';$('detail').hidden=view!=='run';$('modelSettings').hidden=view!=='models';
+  if(prior!==selectedId){active=undefined;candidate=undefined;generation=undefined;}
+  drawRuns();
+  if(view==='run')void open(selectedId,version);
+  else if(view==='models')loadModels(true).catch(e=>err(e.message));
+  else overview();
+}
+
+function svg(tag,attrs={}){
+  const el=document.createElementNS('http://www.w3.org/2000/svg',tag);
+  for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);
+  return el;
+}
+function svgText(x,y,text,cls,anchor='middle'){
+  const el=svg('text',{x,y,class:cls,'text-anchor':anchor});el.textContent=text;return el;
+}
+function marker(parent,text){const title=svg('title');title.textContent=text;parent.append(title);return parent;}
+function generationChart(generations){
+  const figure=node('figure',undefined,'wide-chart');
+  const legend=node('div',undefined,'legend');
+  for(const [text,style] of [['candidates','total'],['retainedParents','qualified'],['elite','elite']]){
+    const el=node('span',t(text),style);legend.append(el);
+  }
+  figure.append(legend);
+  const width=740,height=250,top=23,bottom=199,l=42,r=17;
+  const graph=svg('svg',{viewBox:'0 0 '+width+' '+height,role:'img','aria-label':t('generationProgress')});
+  const max=Math.max(1,...generations.flatMap(g=>[take(g.rows).length,take(g.parents).length,take(g.elites).length]));
+  const step=Math.max(1,Math.ceil(max/4));
+  const y=v=>bottom-v/(step*4)*(bottom-top);
+  for(let i=0;i<=4;i++){
+    graph.append(svg('line',{x1:l,y1:y(i*step),x2:width-r,y2:y(i*step),class:'grid-line'}),svgText(l-8,y(i*step)+4,number(i*step,0),'axis','end'));
+  }
+  const space=(width-l-r)/generations.length;
+  const bw=Math.min(20,Math.max(1,space*.22));
+  for(let j=0;j<generations.length;j++){
+    const g=generations[j],x=l+(j+.5)*space;
+    const vals=[take(g.rows).length,take(g.parents).length,take(g.elites).length];
+    for(const [i,sty] of ['total','qualified','elite'].entries()){
+      const amount=vals[i];if(amount===0)continue;
+      const rect=svg('rect',{x:x+(i-1.52)*bw,y:y(amount),width:Math.max(1,bw-2),height:bottom-y(amount),rx:Math.min(3,bw/5),class:'bar '+sty});
+      graph.append(marker(rect,t('generation')+' '+g.index+' · '+t(i===0?'candidates':i===1?'retainedParents':sty)+': '+number(amount)));
+    }
+    if(j===generations.length-1||j%Math.max(1,Math.ceil(generations.length/12))===0)
+      graph.append(svgText(x,bottom+19,number(g.index,0),'axis'));
+  }
+  graph.append(svgText(width*.52,244,t('generation'),'axis'));
+  figure.append(graph);
+  figure.append(detailPanel(t('chartData'),table([t('generation'),t('candidates'),t('retainedParents'),t('elite')],generations.map(g=>[number(g.index,0),number(take(g.rows).length,0),number(take(g.parents).length,0),number(take(g.elites).length,0)]))));
+  return figure;
+}
+function distribution(g,k){
+  const fig=node('figure',undefined,'distribution');
+  const vals=take(g.rows).map(row=>row.scores?.[k]).filter(Number.isFinite).sort((a,b)=>a-b);
+  fig.append(node('figcaption',lookup(k)));
+  if(!vals.length){fig.append(node('p',t('noScores'),'subtle'));return fig;}
+  const idx=take(g.keys).indexOf(k);
+  const ref=[take(g.qualified)[idx],take(g.elite)[idx]];
+  const bounds=[...vals,...ref.filter(Number.isFinite)];
+  const min=Math.min(...bounds),max=Math.max(...bounds);
+  const range=max-min;
+  const plot=svg('svg',{viewBox:'0 0 220 72',role:'img','aria-label':lookup(k)+': '+number(vals[0])+' – '+number(vals.at(-1))});
+  const x=n=>range===0?110:12+(n-min)/range*196;
+  plot.append(svg('line',{x1:12,y1:54,x2:208,y2:54,class:'grid-line'}));
+  for(let j=0;j<ref.length;j++)if(Number.isFinite(ref[j])){
+    plot.append(marker(svg('line',{x1:x(ref[j]),x2:x(ref[j]),y1:10,y2:54,class:'reference '+(j?'elite':'qualified')}),t(j?'eliteThreshold':'qualifiedThreshold')+': '+number(ref[j])));
+  }
+  for(const [j,v] of vals.entries())plot.append(marker(svg('circle',{cx:x(v),cy:20+(j%4)*8,r:3,class:'sample'}),number(v)));
+  fig.append(plot,properties([[t('minScore'),number(vals[0])],[t('maxScore'),number(vals.at(-1))]]));
+  if(ref.some(Number.isFinite))fig.append(properties([[t('qualifiedThreshold'),number(ref[0])],[t('eliteThreshold'),number(ref[1])]]));
+  return fig;
+}
+function sourcePanel(row){
+  const latest=take(row.revisions).at(-1);
+  const content=node('div',undefined,'candidate-content');
+  content.append(properties([[t('candidate'),row.id],[t('researchRole'),row.role],[t('operator'),t(row.operation==='seed'?'seedOp':row.operation||'empty')]]));
+  if(latest)content.append(properties([[t('hypothesis'),latest.hypothesis],[t('formula'),latest.formula]]));
+  if(row.coverage)content.append(properties([[t('testedPeriods'),number(row.coverage.periods,0)],[t('miPeriods'),number(row.coverage.miPeriods,0)],[t('missingValues'),Number.isFinite(row.coverage.missing)?new Intl.NumberFormat(lang,{style:'percent',maximumFractionDigits:2}).format(row.coverage.missing):'—']]));
+  const parentLinks=node('div',undefined,'actions');
+  for(const id of take(row.parents)){
+    const parentGen=take(active.generations).find(g=>take(g.rows).some(x=>x.id===id));
+    if(!parentGen){parentLinks.append(node('span',id,'tag'));continue;}
+    const b=node('button',id,'tag');b.type='button';b.onclick=()=>{generation=parentGen.index;candidate=id;render();$('candidate-result')?.focus();};parentLinks.append(b);
+  }
+  if(parentLinks.childNodes.length)content.append(node('h3',t('lineage')),parentLinks);
+  for(const [i,revision] of take(row.revisions).entries()){
+    const pre=node('pre',revision.code);
+    content.append(detailPanel(t('code')+' '+number(i+1,0)+(revision.stage?' · '+revision.stage:''),pre));
+  }
+  if(take(row.reviews).length){
+    const reports=table([t('stage'),t('status'),t('reason')],row.reviews.map(x=>[x.stage,state(x.pass?'passed':'failed',x.pass?'completed':'failed'),x.reason]));
+    content.append(node('h3',t('reviews')),reports);
+  }
+  const result=panel(latest?.name||row.id,content,'candidate-result');
+  result.id='candidate-result';result.tabIndex=-1;return result;
+}
+function strategyReport(strategies,runId){
+  const all=node('div',undefined,'strategy-list');
+  for(const item of Object.values(strategies)){
+    const sec=node('article',undefined,'panel strategy');
+    const header=node('div',undefined,'section-heading');
+    header.append(node('h3',item.plan?.title||item.id),state('strategy_'+item.status,item.status));
+    if(item.bundle)header.append(link(t('strategyDownload'),runUrl(runId)+'/strategies?download='+encodeURIComponent(item.id),'button secondary'));
+    sec.append(header,properties([[t('strategyBacktestTarget'),targets.get(item.target)||item.target],[t('strategyBacktestStart'),date(item.start)],[t('strategyBacktestEnd'),date(item.end)],[t('strategyBrief'),item.brief||'—']]));
+    if(item.error)sec.append(node('p',t(item.error),'problem'));
+    const metrics=item.bundle?.backtest?.metrics;
+    if(metrics){
+      const stats=node('div',undefined,'stat-grid');
+      stats.append(stat(t('strategyFills'),number(metrics.filledOrders,0)),stat(t('orders'),number(metrics.orders,0)),stat(t('positions'),number(metrics.positions,0)),stat(t('simulatedEvents'),number(metrics.iterations,0)));
+      sec.append(node('h4',t('strategyBacktestMetrics')),stats);
+      for(const [key,label] of [['pnl','pnl'],['returns','returns']]){
+        const section=metrics[key];
+        if(!section||typeof section!=='object'||!Object.keys(section).length)continue;
+        const flat=Object.entries(section).flatMap(([k,v])=>v&&typeof v==='object'?Object.entries(v).map(([sub,value])=>[k+' · '+sub,number(value)]):[[k,number(v)]]);
+        sec.append(detailPanel(t(label),table([t('statistic'),t('value')],flat)));
+      }
+      if(take(item.bundle.sourceCandidates).length)sec.append(properties([[t('sourceFactors'),item.bundle.sourceCandidates.join(' · ')]]));
+      if(item.bundle.plan?.source)sec.append(detailPanel(t('code'),node('pre',item.bundle.plan.source)));
+    }
+    const ops=Object.entries(item.deployments||{});
+    if(ops.length)sec.append(node('h4',t('deploymentReceipts')),table([t('strategyDeployTarget'),t('status'),t('instance'),t('reason')],ops.map(([id,op])=>[
+      targets.get(id)||id,state('strategy_'+op.status,op.status),op.receipt?.instance,t(op.error||'—'),
+    ])));
+    all.append(sec);
+  }
+  return all;
+}
+function render(){
+  if(!active)return;
+  const r=active;
+  const generations=take(r.generations);
+  const output=[];
+  const head=mast(t('report'),runTitle(r));
+  const meta=node('div',undefined,'mast-meta');
+  meta.append(state(r.status),node('span',date(r.created),'subtitle'));
+  if(generations.length)meta.append(link(t('export'),runUrl(r.id)+'/export','button secondary'));
+  head.append(meta);output.push(head);
+  if(r.error)output.push(node('p',t(r.error),'problem'));
+  const cov=r.coverage;
+  const stats=node('div',undefined,'stat-grid');
+  stats.append(stat(t('assetCount'),number(cov?.instruments,0)),stat(t('observedMinutes'),number(cov?.observedMinutes,0),cov?.expectedMinutes!=null?t('expectedMinutes')+': '+number(cov.expectedMinutes,0):null),stat(t('rows'),number(cov?.rows,0)),stat(t('generations'),number(generations.length,0)));
+  output.push(stats);
+  if(r.progress?.total>0&&onAir.has(r.status)){
+    const progress=node('progress');progress.max=r.progress.total;progress.value=r.progress.completed;
+    progress.setAttribute('aria-label',t('generationProgress'));
+    const info=node('div',undefined,'run-progress');
+    info.append(node('span',t('generation')+' '+number(r.current,0)+' · '+number(r.progress.completed,0)+' / '+number(r.progress.total,0)),progress);
+    output.push(info);
+  }
+  const input=r.input||{};
+  const settings=properties([[t('model'),r.model],[t('thinking'),r.thinking],[t('speed'),r.speed==='priority'?'Fast':r.speed==='default'?'Standard':t('providerDefault')],
+    [t('horizon'),number(input.horizon,0)],[t('startDate'),date(input.start)],[t('endExclusive'),date(input.end)],[t('sourceBars'),input.barSpec],
+    ...(cov?[[t('firstBar'),cov.from],[t('lastBar'),cov.through]]:[]),
+    ...(r.stopReason?[[t('runStopReason'),t(r.stopReason==='limit'?'limit':r.stopReason)]]:[]),
+    [t('runId'),r.id]]);
+  if(input.direction)settings.append(properties([[t('direction'),input.direction]]));
+  output.push(detailPanel(t('researchParameters'),settings));
+  if(generations.length){
+    output.push(panel(t('generationProgress'),generationChart(generations)));
+    const current=generations.find(g=>g.index===generation)||generations.at(-1);
+    const sel=node('select');sel.setAttribute('aria-label',t('generation'));
+    sel.append(...generations.map(g=>makeOption(g.index,t('generation')+' '+number(g.index,0))));
+    sel.value=current.index;
+    sel.onchange=()=>{generation=Number(sel.value);candidate=undefined;render();$('generationPicker')?.focus();};
+    sel.id='generationPicker';
+    const chartHeader=node('div',undefined,'section-heading');
+    chartHeader.append(node('h2',t('scores')),sel);
+    const score=node('section',undefined,'panel');
+    const plots=node('div',undefined,'distributions');
+    plots.append(...take(current.keys).map(k=>distribution(current,k)));
+    score.append(chartHeader,plots);output.push(score);
+    if(current.feedback?.notes)output.push(panel(t('feedback'),node('p',current.feedback.notes,'report-prose')));
+    if(take(current.rows).length){
+      const rows=current.rows.map(c=>{
+        const b=node('button',take(c.revisions).at(-1)?.name||c.id,'record');
+        b.type='button';b.onclick=()=>{candidate=c.id;render();$('candidate-result')?.focus();};
+        if(c.id===candidate)b.setAttribute('aria-pressed','true');
+        const status=c.failure?state(c.failure,'failed'):current.elites.includes(c.id)?state('elite'):current.parents.includes(c.id)?state('retainedParents','qualified'):Number.isFinite(c.scores?.ic)?state('evaluated','evaluated'):state('noScores','');
+        return [b,status,...take(current.keys).map(k=>number(c.scores?.[k]))];
+      });
+      output.push(panel(t('candidates'),table([t('candidate'),t('status'),...take(current.keys).map(lookup)],rows),'table-panel'));
+    }
+    const focus=take(current.rows).find(c=>c.id===candidate);
+    if(focus)output.push(sourcePanel(focus));
+  }else output.push(blank(t('noGenerations')));
+  if(Object.keys(r.strategies||{}).length){
+    output.push(node('h2',t('strategyDelivery'),'standalone-title'),strategyReport(r.strategies,r.id));
+  }
+  const el=$('detail');
+  // Keep disclosure and focus state across incoming snapshots.
+  const previousFocus=document.activeElement;
+  const priorControls=[...el.querySelectorAll('a,button,select,summary,[tabindex]')];
+  const focusIndex=priorControls.indexOf(previousFocus);
+  const expanded=[...el.querySelectorAll('details[open] > summary')].map(s=>s.textContent);
+  el.replaceChildren(...output);
+  for(const details of el.querySelectorAll('details'))details.open=expanded.includes(details.firstChild.textContent);
+  if(focusIndex>=0){
+    const nextControl=el.querySelectorAll('a,button,select,summary,[tabindex]')[focusIndex];
+    if(nextControl?.tagName===previousFocus.tagName&&nextControl.textContent===previousFocus.textContent)
+      nextControl.focus({preventScroll:true});
+  }
 }
 const modelKey=x=>(x.provider||'openai')+':'+(x.id||x.model);
 function setupModel(target,preferred){
@@ -44,7 +332,7 @@ function setupModel(target,preferred){
 }
 function showModels(preferDefaults){
   const pref=modelSettings?.defaults;
-  for(const target of [form,defaultsForm]){
+  for(const target of [defaultsForm]){
     const old=target.elements.model.value;
     target.elements.model.replaceChildren(...list.map(x=>makeOption(modelKey(x),(x.name||x.id)+' / '+(x.provider==='openai-codex'?'ChatGPT':'OpenAI API'))));
     const prefKey=pref?.model?modelKey(pref):'';
@@ -53,6 +341,7 @@ function showModels(preferDefaults){
     setupModel(target,preferDefaults&&prefKey===target.elements.model.value?pref:undefined);
   }
   $('modelConnection').textContent=t(modelSettings?.connected?'modelConnected':'modelDisconnected');
+  $('modelSettingsNotice').hidden=Boolean(modelSettings?.writable);
   keyForm.elements.key.disabled=!modelSettings?.writable;
   keyForm.querySelector('[type=submit]').disabled=!modelSettings?.writable;
   $('disconnectModel').disabled=!modelSettings?.writable||!modelSettings?.stored;
@@ -81,22 +370,17 @@ async function loadModels(preferDefaults){
   showModels(preferDefaults);
 }
 async function saveModelSettings(value,formElement){
-  if(formElement.dataset.saving)return;
+  if(formElement.dataset.saving||!modelSettings?.writable)return;
   formElement.dataset.saving='1';
   err();
   try{
-    modelSettings=await api('/model-settings',value);
+    modelSettings=await updateModelSettings(value);
     list=modelSettings.models;
     showModels(true);
     if(value.action==='defaults')$('modelConnection').textContent=t('modelSaved');
   }catch(e){err(e.message);}
   finally{delete formElement.dataset.saving;}
 }
-$('modelSettingsButton').onclick=()=>{
-  selectedId=undefined;active=undefined;stream?.close();location.hash='';
-  $('create').hidden=true;$('detail').hidden=true;$('strategy-delivery').hidden=true;$('modelSettings').hidden=false;
-  err();drawRuns();loadModels(true).catch(e=>err(e.message));
-};
 keyForm.onsubmit=e=>{
   e.preventDefault();
   if(keyForm.dataset.saving||!modelSettings?.writable)return;
@@ -116,141 +400,21 @@ defaultsForm.onsubmit=e=>{
   if(!selected)return;
   void saveModelSettings({action:'defaults',model:selected.id,provider:selected.provider,thinking:thinking.value,speed:speed.value||null},defaultsForm);
 };
-function makeOption(value,title){const o=node('option',title);o.value=value;return o;}
-function stylePreset(){for(const e of document.querySelectorAll('.tunable'))e.hidden=form.elements.preset.value==='paper';}
-form.elements.model.onchange=()=>setupModel(form);defaultsForm.elements.model.onchange=()=>setupModel(defaultsForm);form.elements.preset.onchange=stylePreset;
-loadModels(true).catch(e=>err(e.message));
-form.onsubmit=async e=>{
-  e.preventDefault();err();
-  const payload=Object.fromEntries(new FormData(form));payload.id=crypto.randomUUID();
-  const selected=list.find(x=>modelKey(x)===payload.model);
-  if(!selected){err('MODEL_CREDENTIAL');return;}
-  payload.model=selected.id;payload.provider=selected.provider;
-  const b=form.querySelector('button[type=submit]');b.disabled=true;
-  try{const r=await api('/runs',payload);refreshRuns();await open(r.id);}catch(e){err(e.message);}finally{b.disabled=false;}
-};
-function chart(g,k){
-  const vals=g.rows.map(r=>r.scores?.[k]).filter(Number.isFinite).sort((a,b)=>a-b);
-  if(!vals.length)return node('div',k.toUpperCase()+' · —','mini');
-  const lo=vals[0], hi=vals.at(-1), width=220,height=88;
-  const x=(v)=>12+(v-lo)/(hi-lo||1)*(width-24);
-  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-  svg.setAttribute('viewBox','0 0 '+width+' '+height);svg.setAttribute('aria-label',k.toUpperCase());
-  const make=(tag,a)=>{const s=document.createElementNS(svg.namespaceURI,tag);for(const [k,v] of Object.entries(a))s.setAttribute(k,v);svg.append(s);};
-  for(const [i,v] of vals.entries())make('circle',{cx:x(v),cy:73-i/Math.max(1,vals.length-1)*57,r:2.5,fill:'#b5573b'});
-  for(const [v,col] of [[g.qualified[g.keys.indexOf(k)],'#9d9486'],[g.elite[g.keys.indexOf(k)],'#69482a']])if(Number.isFinite(v))make('line',{x1:x(v),x2:x(v),y1:8,y2:80,stroke:col,'stroke-dasharray':'3 3'});
-  const out=node('figure',undefined,'mini');out.append(node('figcaption',k.toUpperCase()),svg,node('small',format(lo)+'  ·  '+format(hi)));return out;
-}
-function render(){
-  if(!active)return;
-  strategyView();
-  $('modelSettings').hidden=true;$('create').hidden=true;$('detail').hidden=false;
-  const r=active;const h=node('div',undefined,'heading');const title=node('div');title.append(node('h1',t(r.preset)),node('span',t(r.status),'pill'));h.append(title);
-  const controls=node('div',undefined,'actions');for(const [verb,statuses] of [['pause',['queued','running']],['resume',['pausing','paused']],['stop',['queued','running','pausing','paused']]]){
-    if(statuses.includes(r.status))controls.append(btn(verb,()=>api('/runs/'+r.id+'/actions',{action:verb}).catch(e=>err(e.message))));
-  }
-  const exportLink=node('a',t('export'),'button');exportLink.href='/api/runs/'+r.id+'/export';controls.append(exportLink);h.append(controls);
-  const out=[h];
-  if(r.error)out.push(node('p',t(r.error),'problem'));
-  const p=r.progress;if(p)out.push(node('div',t('generation')+' '+r.current+'/'+r.limit+' · '+p.completed+'/'+p.total,'muted'));
-  const c=r.coverage;if(c)out.push(node('div',[[t('assetCount'),c.instruments],[t('observedMinutes'),c.observedMinutes],[t('expectedMinutes'),c.expectedMinutes],[t('rows'),c.rows]].map(([k,v])=>k+' '+format(v)).join(' · '),'muted'));
-  if(!r.generations.length){$('detail').replaceChildren(...out);return;}
-  const gs=node('select');gs.setAttribute('aria-label',t('generation'));gs.append(...r.generations.map(g=>makeOption(g.index,t('generation')+' '+g.index)));
-  const g=r.generations.find(x=>x.index===generation)||r.generations.at(-1);gs.value=g.index;gs.onchange=()=>{generation=Number(gs.value);candidate=undefined;render();};out.push(gs);
-  const plots=node('div',undefined,'plots');plots.append(...g.keys.map(k=>chart(g,k)));out.push(plots);
-  const table=node('table'),head=node('thead'),tr=node('tr');
-  for(const name of [t('candidate'),t('operator'),t('status'),...g.keys.map(k=>k.toUpperCase())])tr.append(node('th',name));head.append(tr);table.append(head);
-  const tbody=node('tbody');for(const x of g.rows){
-    const tr=node('tr');const td=node('td');td.append(btn(x.id,()=>{candidate=x.id;render();}));tr.append(td);
-    tr.append(node('td',t(x.operation==='seed'?'seedOp':x.operation||'empty')),node('td',x.failure?t(x.failure):g.elites.includes(x.id)?t('elite'):g.parents.includes(x.id)?t('qualified'):'—'));
-    for(const k of g.keys)tr.append(node('td',format(x.scores?.[k])));
-    tbody.append(tr);
-  }table.append(tbody);const scroll=node('div',undefined,'scroll');scroll.append(table);out.push(scroll);
-  const focus=g.rows.find(x=>x.id===candidate);
-  if(focus){
-    const panel=node('section',undefined,'panel');panel.append(node('h2',focus.revisions.at(-1)?.name||focus.id),node('h3',t('lineage')));
-    const parents=node('div',undefined,'actions');
-    for(const id of focus.parents)parents.append(btn(id,()=>{generation=Number(id.split('.')[0]);candidate=id;render();}));
-    if(!focus.parents.length)parents.append(node('span','—'));
-    panel.append(parents);
-    if(focus.revisions.length){
-      const code=node('pre',focus.revisions.at(-1).code);panel.append(node('h3',t('code')),code);
-      if(focus.revisions.length>1){
-        const before=focus.revisions.at(-2).code.split('\n'),after=focus.revisions.at(-1).code.split('\n');
-        const diff=before.filter((line,i)=>line!==after[i]).map(x=>'- '+x).concat(after.filter((line,i)=>line!==before[i]).map(x=>'+ '+x));panel.append(node('h3',t('diff')),node('pre',diff.join('\n')));
-      }
-    }
-    if(focus.reviews.length){panel.append(node('h3',t('reviews')));for(const review of focus.reviews)panel.append(node('div',(review.pass?'✓ ':'× ')+review.stage+' · '+review.reason));}
-    out.push(panel);
-  }
-  $('detail').replaceChildren(...out);
-}
+
+defaultsForm.elements.model.onchange=()=>setupModel(defaultsForm);
 function localize(){
   document.documentElement.lang=lang;
-  for(const e of document.querySelectorAll('[data-i]'))e.textContent=t(e.dataset.i);
-  $('new').textContent='+ '+t('newRun');$('lang').value=lang;err(errorCode);if(modelSettings)showModels(false);drawRuns();render();
+  for(const el of document.querySelectorAll('[data-i]'))el.textContent=t(el.dataset.i);
+  $('lang').value=lang;
+  err(errorCode);drawRuns();
+  if(view==='overview')overview();else if(view==='run')render();else if(view==='models'&&modelSettings)showModels(false);
 }
-const strategyTargets={enabled:false,targets:[]};
-const buildForm=$('strategy-build'), backtestTarget=$('strategy-backtest-target'), deployTarget=$('strategy-deploy-target');
-const button=buildForm.querySelector('button');
-const targetName=id=>strategyTargets.targets.find(x=>x.id===id)?.label||id;
-const attempts=new Map();
-const acquire=(request)=>{
-  const key=JSON.stringify(request);
-  if(!attempts.has(key))attempts.set(key,crypto.randomUUID());
-  return [key,attempts.get(key)];
-};
-function strategyView(){
-  const section=$('strategy-delivery');
-  const available=Boolean(active&&strategyTargets.enabled&&strategyTargets.targets.length);
-  section.hidden=!available;
-  if(!available)return;
-  const ok=active.status==='completed'&&active.generations.some(g=>g.elites.length);
-  buildForm.hidden=!ok||!backtestTarget.options.length;
-  for(const key of ['start','end'])$('strategy-backtest-'+key).min=active.input.end;
-  const results=$('strategy-results');results.replaceChildren();
-  for(const item of Object.values(active.strategies||{})){
-    const sec=node('section',undefined,'panel');
-    sec.append(node('h3',item.plan?.title||t('strategyPackage')));
-    sec.append(node('p',[t('strategyBacktestTarget'),targetName(item.target),t('strategy_'+item.status)].join(' · ')));
-    if(item.error)sec.append(node('p',t(item.error),'problem'));
-    if(item.bundle){
-      const m=item.bundle.backtest.metrics;
-      sec.append(node('p',t('strategyFills')+': '+format(m.filledOrders)));
-      const metrics=node('details');metrics.append(node('summary',t('strategyBacktestMetrics')),node('pre',JSON.stringify(m,null,2)));sec.append(metrics);
-      const download=node('a',t('strategyDownload'),'button');download.href='/api/runs/'+active.id+'/strategies?download='+item.id;sec.append(download);
-      if(deployTarget.options.length)sec.append(btn('strategyPush',async()=>{
-        if(!deployTarget.value)return;
-        const runId=active.id;
-        try{await api('/runs/'+runId+'/strategies',{action:'push',id:item.id,target:deployTarget.value},$('strategy-token').value);}
-        catch(e){err(e.message);}
-      }));
-    }
-    for(const [id,operation] of Object.entries(item.deployments)){
-      sec.append(node('p',targetName(id)+' · '+t(operation.error||'strategy_'+operation.status)));
-    }
-    results.append(sec);
-  }
-}
-buildForm.onsubmit=async e=>{
-  e.preventDefault();
-  if(button.disabled||!active)return;
-  const request={action:'build',brief:$('strategy-brief').value,target:backtestTarget.value,start:$('strategy-backtest-start').value,end:$('strategy-backtest-end').value};
-  const [key,id]=acquire({run:active.id,...request});
-  button.disabled=true;
-  try{await api('/runs/'+active.id+'/strategies',{...request,id},$('strategy-token').value);attempts.delete(key);}
-  catch(e){err(e.message);}
-  finally{button.disabled=false;}
-};
-api('/strategy-targets').then(data=>{
-  Object.assign(strategyTargets,data);
-  for(const [role,select] of [['backtest',backtestTarget],['deploy',deployTarget]]){
-    select.replaceChildren(...data.targets.filter(x=>x.roles.includes(role)).map(x=>makeOption(x.id,x.label)));
-  }
-  $('strategy-deploy-target').closest('label').hidden=!deployTarget.options.length;
-  strategyView();
-}).catch(()=>{});
-
 $('lang').onchange=e=>{lang=e.target.value;localStorage.setItem('alpha.locale',lang);localize();};
-$('new').onclick=home;
-localize();stylePreset();refreshRuns();if(/^[0-9a-f-]{36}$/.test(location.hash.slice(1)))open(location.hash.slice(1));
+document.querySelector('.skip').onclick=e=>{e.preventDefault();$('main').focus();};
+window.addEventListener('hashchange',route);
+localize();route();void refreshRuns();
+void api('/strategy-targets').then(data=>{
+  for(const target of take(data.targets))targets.set(target.id,target.label);
+  if(view==='run')render();
+}).catch(()=>{});
+setInterval(()=>{if(!document.hidden)void refreshRuns();},25000);

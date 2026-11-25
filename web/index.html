@@ -1,24 +1,38 @@
-<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AlphaZonai</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
-<body><aside><div class="brand"><span aria-hidden="true">α</span> AlphaZonai</div><button id="new" class="primary"></button><button id="modelSettingsButton" type="button" data-i="modelSettings"></button><h2 data-i="runs"></h2><nav id="runs"></nav><label class="locale"><span data-i="language"></span><select id="lang"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label></aside>
-<main><p role="alert" id="error" hidden></p><section id="create"><h1 data-i="newRun"></h1><form id="form"><input name="preset" type="hidden" value="minute"><label><span data-i="model"></span><select name="model" required></select></label><label><span data-i="thinking"></span><select name="thinking"><option value="off">Off</option></select></label><label><span data-i="speed"></span><select name="speed"></select></label><div class="grid"><label><span data-i="startDate"></span><input name="start" type="date" required></label><label><span data-i="endDate"></span><input name="end" type="date" required></label><label><span data-i="horizon"></span><input name="horizon" type="number" min="1" value="5" required></label><label><span data-i="seed"></span><input name="seed" type="number" value="42" required></label><label class="tunable"><span data-i="generations"></span><input name="generations" type="number" min="1" placeholder="8"></label><label class="tunable"><span data-i="concurrency"></span><input name="parallel" type="number" min="1" placeholder="8"></label><label class="tunable"><span data-i="plateauWindow"></span><input name="plateauWindow" type="number" min="0" placeholder="0"></label></div><button class="primary" type="submit" data-i="run"></button></form></section><section id="detail" hidden></section><section id="strategy-delivery" hidden>
-<h2 data-i="strategyDelivery"></h2>
-<label><span data-i="strategyToken"></span><input id="strategy-token" type="password" autocomplete="off"></label>
-<form id="strategy-build">
-<div class="grid">
-<label><span data-i="strategyBacktestTarget"></span><select id="strategy-backtest-target" required></select></label>
-<label><span data-i="strategyBacktestStart"></span><input id="strategy-backtest-start" type="date" required></label>
-<label><span data-i="strategyBacktestEnd"></span><input id="strategy-backtest-end" type="date" required></label>
-</div>
-<label><span data-i="strategyBrief"></span><textarea id="strategy-brief" maxlength="2000"></textarea></label>
-<button class="primary" type="submit" data-i="strategyBuild"></button>
-</form>
-<label><span data-i="strategyDeployTarget"></span><select id="strategy-deploy-target"></select></label>
-<div id="strategy-results"></div>
-</section><section id="modelSettings" hidden>
-<h1 data-i="modelSettings"></h1><p id="modelConnection" role="status"></p>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AlphaZonai</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main" data-i="skip"></a>
+  <aside class="rail">
+    <a class="brand" id="brand" href="#overview"><span aria-hidden="true">α</span> AlphaZonai</a>
+    <nav id="navigation">
+      <a href="#overview" id="overviewLink"><span aria-hidden="true">▤</span><span data-i="overview"></span></a>
+      <a href="#models" id="modelSettingsButton"><span aria-hidden="true">⚙</span><span data-i="modelSettings"></span></a>
+    </nav>
+    <div class="rail-reports"><h2 data-i="reports"></h2><nav id="runs"></nav></div>
+    <label class="locale"><span data-i="language"></span><select id="lang"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
+  </aside>
+  <main id="main" tabindex="-1">
+    <p role="alert" id="error" class="problem" hidden></p>
+    <section id="overview" aria-labelledby="overviewTitle">
+      <header class="mast"><div class="eyebrow" data-i="research"></div><h1 id="overviewTitle" data-i="reports"></h1></header>
+      <div id="overviewContent" aria-busy="true"></div>
+    </section>
+    <section id="detail" hidden></section>
+    <section id="modelSettings" hidden>
+<header class="mast"><div class="eyebrow">AlphaZonai</div><h1 data-i="modelSettings"></h1></header><p id="modelSettingsNotice" data-i="MODEL_SETTINGS_LOCAL" class="problem" hidden></p><div class="settings-grid"><section class="panel settings-card"><h2>ChatGPT</h2>
 <div id="chatGPTActions" class="actions"><button id="chatGPTStart" type="button" data-i="chatGPTStart"></button><button id="chatGPTCancel" type="button" data-i="chatGPTCancel" hidden></button><button id="chatGPTDisconnect" type="button" data-i="chatGPTDisconnect" hidden></button></div>
 <p id="chatGPTDevice" role="status" hidden><a id="chatGPTLink" target="_blank" rel="noopener noreferrer" data-i="chatGPTOpen"></a> <code id="chatGPTCode"></code></p><p id="chatGPTStatus" role="status"></p>
-<form id="modelKeyForm"><label><span data-i="modelApiKey"></span><input name="key" type="password" autocomplete="off" spellcheck="false" required></label><div class="actions"><button class="primary" data-i="connectModel" type="submit"></button><button data-i="disconnectModel" id="disconnectModel" type="button"></button><button data-i="refreshModels" id="refreshModels" type="button"></button></div></form>
-<form id="modelDefaultsForm"><label><span data-i="model"></span><select name="model" required></select></label><label><span data-i="thinking"></span><select name="thinking"></select></label><label><span data-i="speed"></span><select name="speed"></select></label><button class="primary" data-i="saveModelDefaults" type="submit"></button></form>
-</section></main>
-</body></html>
+</section><section class="panel settings-card"><h2>OpenAI API</h2><p id="modelConnection" role="status"></p><form id="modelKeyForm"><label><span data-i="modelApiKey"></span><input name="key" type="password" autocomplete="off" spellcheck="false" required></label><div class="actions"><button class="primary" data-i="connectModel" type="submit"></button><button data-i="disconnectModel" id="disconnectModel" type="button"></button><button data-i="refreshModels" id="refreshModels" type="button"></button></div></form>
+</section><section class="panel settings-card"><h2 data-i="defaultModel"></h2><form id="modelDefaultsForm"><label><span data-i="model"></span><select name="model" required></select></label><label><span data-i="thinking"></span><select name="thinking"></select></label><label><span data-i="speed"></span><select name="speed"></select></label><button class="primary" data-i="saveModelDefaults" type="submit"></button></form>
+</section></div></section>
+  </main>
+</body>
+</html>
