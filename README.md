@@ -4,7 +4,8 @@ CogAlpha search and evolution on Pi Durable, with NautilusTrader market data.
 
 - Start, pause, stop and resume research runs.
 - Inspect candidate code, reviews, scores, and ancestry.
-- Export selected factors without placing orders or running a strategy.
+- Export candidate factors and turn shortlisted research into a Nautilus strategy.
+- Backtest against one Nautilus instance and stage an inactive strategy on another.
 - English and Simplified Chinese.
 
 ## Run
@@ -25,6 +26,12 @@ Open http://127.0.0.1:8787. The Linux host must allow nested user and network
 namespaces for Bubblewrap. The Docker flags permit the nested sandbox; the
 service does not run privileged. Run only on a self-hosted machine you control.
 Without a functioning sandbox, the research run stops before asking the model.
+
+## Strategy delivery
+
+Configure separate local or SSH targets and complete a native backtest before pushing
+an inactive package. See [strategy delivery](docs/strategy-delivery.md) for the
+operator configuration, protocol and runtime requirements.
 
 ## Skills and source
 

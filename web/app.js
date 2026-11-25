@@ -8,8 +8,8 @@ const node=(name,text,cls)=>{const e=document.createElement(name);if(text!==unde
 const format=v=>v==null?'—':typeof v==='number'?Intl.NumberFormat(lang,{maximumFractionDigits:5}).format(v):v;
 const btn=(k,fn,cls)=>{const b=node('button',t(k),cls);b.type='button';b.onclick=fn;return b;};
 function err(code){errorCode=code;$('error').hidden=!code;$('error').textContent=code?t(code):'';}
-async function api(path,body){
-  const r=await fetch('/api'+path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+async function api(path,body,token){
+  const r=await fetch('/api'+path,body?{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(body)}:{});
   const j=await r.json();if(!r.ok)throw Error(j.error||'SERVER_ERROR');return j;
 }
 function refreshRuns(){api('/runs').then(r=>{runs=r;drawRuns();}).catch(e=>err(e.message));}
@@ -20,8 +20,9 @@ function drawRuns(){
     return b;
   }));
 }
-function home(){selectedId=undefined;active=undefined;stream?.close();location.hash='';err();$('create').hidden=false;$('detail').hidden=true;drawRuns();}
+function home(){$('strategy-delivery').hidden=true;selectedId=undefined;active=undefined;stream?.close();location.hash='';err();$('create').hidden=false;$('detail').hidden=true;drawRuns();}
 async function open(id){
+  $('strategy-delivery').hidden=true;
   stream?.close();selectedId=id;active=undefined;generation=undefined;candidate=undefined;err();location.hash=id;
   try{
     const r=await api('/runs/'+id);if(selectedId!==id)return;active=r;render();
@@ -62,6 +63,7 @@ function chart(g,k){
 }
 function render(){
   if(!active)return;
+  strategyView();
   $('create').hidden=true;$('detail').hidden=false;
   const r=active;const h=node('div',undefined,'heading');const title=node('div');title.append(node('h1',t(r.preset)),node('span',t(r.status),'pill'));h.append(title);
   const controls=node('div',undefined,'actions');for(const [verb,statuses] of [['pause',['queued','running']],['resume',['pausing','paused']],['stop',['queued','running','pausing','paused']]]){
@@ -108,6 +110,67 @@ function localize(){
   for(const e of document.querySelectorAll('[data-i]'))e.textContent=t(e.dataset.i);
   $('new').textContent='+ '+t('newRun');$('lang').value=lang;err(errorCode);drawRuns();render();
 }
+
+const strategyTargets={enabled:false,targets:[]};
+const buildForm=$('strategy-build'), backtestTarget=$('strategy-backtest-target'), deployTarget=$('strategy-deploy-target');
+const button=buildForm.querySelector('button');
+const targetName=id=>strategyTargets.targets.find(x=>x.id===id)?.label||id;
+const attempts=new Map();
+const acquire=(request)=>{
+  const key=JSON.stringify(request);
+  if(!attempts.has(key))attempts.set(key,crypto.randomUUID());
+  return [key,attempts.get(key)];
+};
+function strategyView(){
+  const section=$('strategy-delivery');
+  const available=Boolean(active&&strategyTargets.enabled&&strategyTargets.targets.length);
+  section.hidden=!available;
+  if(!available)return;
+  const ok=active.status==='completed'&&active.generations.some(g=>g.elites.length);
+  buildForm.hidden=!ok||!backtestTarget.options.length;
+  for(const key of ['start','end'])$('strategy-backtest-'+key).min=active.input.end;
+  const results=$('strategy-results');results.replaceChildren();
+  for(const item of Object.values(active.strategies||{})){
+    const sec=node('section',undefined,'panel');
+    sec.append(node('h3',item.plan?.title||t('strategyPackage')));
+    sec.append(node('p',[t('strategyBacktestTarget'),targetName(item.target),t('strategy_'+item.status)].join(' · ')));
+    if(item.error)sec.append(node('p',t(item.error),'problem'));
+    if(item.bundle){
+      const m=item.bundle.backtest.metrics;
+      sec.append(node('p',t('strategyFills')+': '+format(m.filledOrders)+' · '+t('assetCount')+': '+format(m.instruments)));
+      const download=node('a',t('strategyDownload'),'button');download.href='/api/runs/'+active.id+'/strategies?download='+item.id;sec.append(download);
+      if(deployTarget.options.length)sec.append(btn('strategyPush',async()=>{
+        if(!deployTarget.value)return;
+        const runId=active.id;
+        try{await api('/runs/'+runId+'/strategies',{action:'push',id:item.id,target:deployTarget.value},$('strategy-token').value);}
+        catch(e){err(e.message);}
+      }));
+    }
+    for(const [id,operation] of Object.entries(item.deployments)){
+      sec.append(node('p',targetName(id)+' · '+t(operation.error||'strategy_'+operation.status)));
+    }
+    results.append(sec);
+  }
+}
+buildForm.onsubmit=async e=>{
+  e.preventDefault();
+  if(button.disabled||!active)return;
+  const request={action:'build',target:backtestTarget.value,start:$('strategy-backtest-start').value,end:$('strategy-backtest-end').value};
+  const [key,id]=acquire({run:active.id,...request});
+  button.disabled=true;
+  try{await api('/runs/'+active.id+'/strategies',{...request,id},$('strategy-token').value);attempts.delete(key);}
+  catch(e){err(e.message);}
+  finally{button.disabled=false;}
+};
+api('/strategy-targets').then(data=>{
+  Object.assign(strategyTargets,data);
+  for(const [role,select] of [['backtest',backtestTarget],['deploy',deployTarget]]){
+    select.replaceChildren(...data.targets.filter(x=>x.roles.includes(role)).map(x=>makeOption(x.id,x.label)));
+  }
+  $('strategy-deploy-target').closest('label').hidden=!deployTarget.options.length;
+  strategyView();
+}).catch(()=>{});
+
 $('lang').onchange=e=>{lang=e.target.value;localStorage.setItem('alpha.locale',lang);localize();};
 $('new').onclick=home;
 localize();stylePreset();refreshRuns();if(/^[0-9a-f-]{36}$/.test(location.hash.slice(1)))open(location.hash.slice(1));

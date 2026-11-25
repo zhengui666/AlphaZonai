@@ -1,6 +1,8 @@
 import {AssistantEntry, GenerationTask, hook, configure, defineDoc, defineExtension, defineSignal, defineTask} from '@earendil-works/pi-durable';
 import {obj, str} from '@earendil-works/pi-schema';
 import {spawn} from 'node:child_process';
+import {isDeepStrictEqual} from 'node:util';
+import {callTarget,planInstructions,validateStrategyPlan} from './strategy.ts';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -235,7 +237,64 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
       }
     }
   });
-  return {Run,extension:defineExtension({name:'alphazonai',tasks:[Run,Gen,CandidateTask],hooks:[hook(GenerationTask,{beforeProviderRequest:async (request,api,ctx)=>{
+  const StrategyBuild=defineTask<any,any,any>({
+    name:'alphazonai.strategy_build',version:1,initial:()=>({phase:'plan'}),
+    abort:async(task,api,ctx)=>api.commit(async tx=>{
+      const item=(await tx.doc(Runs,task.input.docId)).runs[task.input.runId].strategies[task.input.id];
+      item.status='failed';item.error='STRATEGY_BUILD_FAILED';
+      return {status:'terminal',outcome:{status:'aborted'}};
+    },ctx),
+    phases:{
+      plan:async(task,api,ctx)=>{
+        const input=task.input;
+        try{
+          const plan=validateStrategyPlan(json(await ask(api,ctx,'strategy:plan',planInstructions+'\nResearch evidence (JSON): '+JSON.stringify(input.evidence),0.8)));
+          return api.commit(async tx=>{
+            const item=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id];
+            item.status='backtesting';item.plan=plan;return next({phase:'backtest',plan});
+          },ctx);
+        }catch(e:any){
+          if(api.signal.aborted)throw e;
+          return api.commit(async tx=>{
+            const item=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id];
+            item.status='failed';item.error=e instanceof WorkflowError?e.message:'STRATEGY_PLAN_INVALID';return done(null);
+          },ctx);
+        }
+      },
+      backtest:async(task,api,ctx)=>{
+        const input=task.input, plan=task.state.checkpoint.plan;
+        let receipt:any, problem:string|undefined;
+        try{
+          receipt=await callTarget(input.target,'backtest',
+            {id:input.id,plan,start:input.start,end:input.end,research_end:input.researchEnd},api.signal);
+          const received=validateStrategyPlan(receipt.strategy.config.plan);
+          if(!isDeepStrictEqual(received,plan))throw Error('STRATEGY_RECEIPT_INVALID');
+        }catch(e:any){if(api.signal.aborted)throw e;problem=e.message;}
+        return api.commit(async tx=>{
+          const item=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id];
+          if(problem){item.status='failed';item.error=problem;return done(null);}
+          item.bundle={schema:1,nautilus:receipt.nautilus,id:input.id,researchRun:input.runId,sourceCandidates:input.evidence.map((x:any)=>x.id),backtestTarget:input.target,strategy:receipt.strategy,backtest:receipt};
+          item.status='validated';
+          return done(null);
+        },ctx);
+      },
+    },
+  });
+  const StrategyPush=defineTask<any,any,any>({
+    name:'alphazonai.strategy_push',version:1,initial:()=>({phase:'stage'}),
+    phases:{stage:async(task,api,ctx)=>{
+      const input=task.input;
+      let receipt:any,problem:string|undefined;
+      try{receipt=await callTarget(input.target,'stage',{id:input.id,bundle:input.bundle},api.signal);}
+      catch(e:any){if(api.signal.aborted)throw e;problem=e.message;}
+      return api.commit(async tx=>{
+        const op=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id].deployments[input.target];
+        if(problem){op.status='failed';op.error=problem;}else{op.status='staged';op.receipt=receipt;}
+        return done(null);
+      },ctx);
+    }},
+  });
+  return {Run,StrategyBuild,StrategyPush,extension:defineExtension({name:'alphazonai',tasks:[Run,Gen,CandidateTask,StrategyBuild,StrategyPush],hooks:[hook(GenerationTask,{beforeProviderRequest:async (request,api,ctx)=>{
     const options=await api.snapshot(Request,api.conversationId,ctx);
     if(!options?.maxTokens||request.model.api!=='openai-responses'||!request.payload||typeof request.payload!=='object')return;
     const payload={...request.payload,max_output_tokens:options.maxTokens} as Record<string,unknown>;

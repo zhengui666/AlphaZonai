@@ -9,13 +9,14 @@ import {createModels} from '@earendil-works/pi-ai/models';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
 import {createCogAlpha,Runs,Resume} from './extension.ts';
 import {paper,minute} from './method.ts';
+import {authorizedStrategyWrite,readTargets,strategyEvidence,strategyId} from './strategy.ts';
 
 const state=resolve(process.env.ALPHA_STATE||'state');
 const catalog=resolve(process.env.ALPHA_CATALOG||'/catalog');
 const models=createModels();
 models.setProvider(openaiProvider());
 const registry=createRegistry();
-const {extension,Run}=createCogAlpha();
+const {extension,Run,StrategyBuild,StrategyPush}=createCogAlpha();
 registry.install(extension);
 await mkdir(state,{recursive:true});
 const harness=await Harness.open(await openNodeSqliteStorage(join(state,'pi.sqlite')),{models,registry},ctx);
@@ -52,6 +53,11 @@ function input(raw:any){
   }
   return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',model:raw.model,thinking,start:raw.start,end:raw.end,horizon,seed,rules};
 }
+function strategyDate(x:any){
+  if(typeof x!=='string'||!/^\d{4}-\d\d-\d\d$/.test(x)||!Number.isFinite(Date.parse(x)))return null;
+  const date=new Date(x).toISOString();
+  return date.slice(0,10)===x?date:null;
+}
 const server=createServer(async (req,res)=>{
   try{
     const url=new URL(req.url||'/', 'http://localhost');
@@ -61,6 +67,10 @@ const server=createServer(async (req,res)=>{
       const name=assets[path];res.writeHead(200,{'Content-Type':mime[name.split('.').at(-1)!]+';charset=utf-8','Content-Security-Policy':"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(await readFile(join(site,name)));return;
     }
     if(method==='POST' && (req.headers.origin && new URL(req.headers.origin).host!==req.headers.host || !req.headers['content-type']?.startsWith('application/json')))return send(res,403,{error:'BAD_REQUEST'});
+    if(path==='/api/strategy-targets'&&method==='GET'){
+      const targets=await readTargets();
+      return send(res,200,{targets:targets.map(({id,label,roles})=>({id,label,roles})),enabled:Boolean(process.env.ALPHA_STRATEGY_TOKEN)});
+    }
     if(path==='/api/models'&&method==='GET'){
       const list=await models.getAvailable('openai');
       return send(res,200,{models:list.map(m=>({id:m.id,name:m.name,thinking:['off',...Object.keys(m.thinkingLevelMap||{}).filter(k=>k!=='off'&&m.reasoning)]}))});
@@ -87,12 +97,60 @@ const server=createServer(async (req,res)=>{
       harness.resume();
       return send(res,202,{id});
     }
-    const m=path.match(/^\/api\/runs\/([0-9a-f-]{36})(?:\/(events|actions|export))?$/);
+    const m=path.match(/^\/api\/runs\/([0-9a-f-]{36})(?:\/(events|actions|export|strategies))?$/);
     if(m){
       const [,id,action]=m;
       const run=(await snapshot())[id];
       if(!run)return send(res,404,{error:'NOT_FOUND'});
       if(!action&&method==='GET')return send(res,200,run);
+      if(action==='strategies'&&method==='POST'){
+        if(!authorizedStrategyWrite(req.headers.authorization))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
+        const raw=await body(req);
+        if(typeof raw?.id!=='string'||!strategyId.test(raw.id)||typeof raw.target!=='string'||!['build','push'].includes(raw.action))
+          return send(res,400,{error:'BAD_REQUEST'});
+        const roles=(await readTargets()).find(x=>x.id===raw.target)?.roles??[];
+        if(!roles.includes(raw.action==='build'?'backtest':'deploy'))return send(res,404,{error:'STRATEGY_TARGET_MISSING'});
+        if(raw.action==='build'){
+          if(!process.env.OPENAI_API_KEY)return send(res,400,{error:'MODEL_CREDENTIAL'});
+          if(run.status!=='completed')return send(res,409,{error:'STRATEGY_RUN_INCOMPLETE'});
+          const evidence=strategyEvidence(run);
+          if(!evidence.length)return send(res,409,{error:'STRATEGY_NO_ELITES'});
+          const start=strategyDate(raw.start),end=strategyDate(raw.end),researchEnd=strategyDate(run.input.end);
+          if(!start||!end||!researchEnd||start<researchEnd||end<=start)
+            return send(res,400,{error:'STRATEGY_BACKTEST_DATES'});
+          const result=await root.commit(async tx=>{
+            const r=(await tx.doc(Runs,root.id)).runs[id];
+            r.strategies??={};
+            const existing=r.strategies[raw.id];
+            if(existing)return existing.target===raw.target&&existing.start===start&&existing.end===end;
+            const conversation=await tx.createConversation({ownership:{kind:'ownerless'}});
+            await configure(tx,conversation.id,{model:{provider:'openai',modelId:r.model},thinkingLevel:r.thinking,maxTurns:1,tools:[]});
+            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence},
+              {ownership:{kind:'conversation'},conversationId:conversation.id});
+            r.strategies[raw.id]={task,id:raw.id,status:'generating',target:raw.target,start,end,deployments:{}};
+            return true;
+          },ctx);
+          if(!result)return send(res,409,{error:'STRATEGY_ID_CONFLICT'});
+        }else{
+          if(run.strategies?.[raw.id]?.status!=='validated')return send(res,409,{error:'STRATEGY_NOT_VALIDATED'});
+          await root.commit(async tx=>{
+            const item=(await tx.doc(Runs,root.id)).runs[id].strategies[raw.id];
+            const prior=Object.hasOwn(item.deployments,raw.target)?item.deployments[raw.target]:undefined;
+            if(prior&&prior.status!=='failed')return;
+            const task=await tx.createTask(StrategyPush,{docId:root.id,runId:id,id:raw.id,target:raw.target,bundle:item.bundle},
+              {ownership:{kind:'conversation'},conversationId:root.id});
+            item.deployments[raw.target]={task,status:'pushing'};
+          },ctx);
+        }
+        harness.resume();
+        return send(res,202,{id:raw.id});
+      }
+      if(action==='strategies'&&method==='GET'&&url.searchParams.has('download')){
+        const item=run.strategies?.[url.searchParams.get('download')!];
+        if(!item?.bundle)return send(res,404,{error:'NOT_FOUND'});
+        res.setHeader('Content-Disposition','attachment; filename="alphazonai-strategy-package.json"');
+        return send(res,200,item.bundle);
+      }
       if(action==='export'&&method==='GET'){
         const selected=new Set(run.generations.flatMap((g:any)=>g.elites));
         const rows=run.generations.flatMap((g:any)=>g.rows).filter((x:any)=>selected.has(x.id)).map((x:any)=>({id:x.id,parents:x.parents,scores:x.scores,...x.revisions.at(-1)}));
