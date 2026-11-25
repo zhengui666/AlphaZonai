@@ -118,7 +118,10 @@ def score(data, source, max_nan):
                 if code in log: return {"failure":code}
             return {"failure":"FACTOR_RUNTIME"}
         values=json.loads(p.stdout)
-    frame=pd.read_parquet(data/"labels.parquet")
+    # The isolated entry point returns values in its sorted (ts, instrument)
+    # index order, not physical parquet row order. Align labels to that order.
+    frame=(pd.read_parquet(data/"labels.parquet").set_index(["ts","instrument"])
+           .sort_index().reset_index())
     if not isinstance(values,list) or len(values)!=len(frame):
         return {"failure":"OUTPUT_ALIGNMENT"}
     frame["factor"]=pd.to_numeric(pd.Series(values),errors="coerce")
