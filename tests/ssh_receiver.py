@@ -2,7 +2,6 @@
 from pathlib import Path
 import getpass
 import json
-import os
 import shlex
 import socket
 import subprocess
@@ -44,7 +43,6 @@ def exercise_ssh(root, backtest, deployment, request, expected_source):
                       f"  IdentityFile {identity}\n  UserKnownHostsFile {known}\n  GlobalKnownHostsFile /dev/null\n")
         targets.append({"id": alias, "label": alias, "kind": "ssh", "roles": [role], "alias": alias, "sshConfig": str(files / "client")})
     (files / "client").write_text("\n".join(client))
-    (files / "targets.json").write_text(json.dumps(targets))
     pid = files / "pid"
     sshd_conf = files / "sshd.conf"
     sshd_conf.write_text(f"""
@@ -74,18 +72,18 @@ LogLevel ERROR
         js = """
         import {callTarget} from './src/strategy.ts';
         import {readFileSync} from 'node:fs';
-        const {request,expectedSource}=JSON.parse(readFileSync(0,'utf8'));
+        const {settings,request,expectedSource}=JSON.parse(readFileSync(0,'utf8'));
         const signal=new AbortController().signal;
-        const report=await callTarget('alpha-history','backtest',request,signal);
+        const report=await callTarget(settings,'alpha-history','backtest',request,signal);
         if(report.metrics.filledOrders<2||report.source!==expectedSource)throw new Error('Unexpected backtest evidence');
         const bundle={schema:2,id:request.id,nautilus:report.nautilus,plan:request.plan,strategy:report.strategy,backtest:report};
-        const stage=await callTarget('alpha-stage','stage',{id:request.id,bundle},signal);
+        const stage=await callTarget(settings,'alpha-stage','stage',{id:request.id,bundle},signal);
         if(stage.instance!=='separate-runtime'||stage.activated!==false)throw new Error('Incorrect stage receipt');
         console.log(JSON.stringify(stage));
         """
-        env = {**os.environ, "ALPHA_STRATEGY_TARGETS": str(files / "targets.json")}
-        result = subprocess.run(["node", "--input-type=module", "-e", js], cwd=backend, env=env,
-                                input=json.dumps({"request": request, "expectedSource": expected_source}),
+        result = subprocess.run(["node", "--input-type=module", "-e", js], cwd=backend,
+                                input=json.dumps({"settings": {"targets": targets, "python": sys.executable},
+                                                  "request": request, "expectedSource": expected_source}),
                                 text=True, capture_output=True, timeout=45)
         if result.returncode:
             raise RuntimeError((files / "daemon.log").read_text() + result.stderr)

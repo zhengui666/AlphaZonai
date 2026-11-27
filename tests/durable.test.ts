@@ -16,7 +16,8 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
   const counts=new Map<string,number>();
   const prompts:string[]=[];
   const direction='Compare volume persistence with price reversals; never use BTC as a market proxy.';
-  const {extension,Run}=createCogAlpha({
+  const workers={stateDir:dir,nautilusSettings:async()=>({python:'python3',targets:[]})};
+  const {extension,Run}=createCogAlpha(workers,{
     keys:['quality'],contract:'Text quality',
     prepare:async()=>({rows:3}),
     score:async (code,c,signal)=>{
@@ -106,7 +107,8 @@ test('Pi native conversations return JSON to generation and review tasks',async(
   const models=createModels();
   models.setProvider({...provider,auth:{apiKey:{name:'Test transport',resolve:async()=>({auth:{apiKey:'test-transport'},source:'test'})}},stream,streamSimple:stream});
   const dir=await mkdtemp(join(tmpdir(),'az-role-'));
-  const {extension,Run}=createCogAlpha({keys:['quality'],contract:'JSON-backed candidate',prepare:async()=>({}),score:async code=>({scores:{quality:code==='actual-code'?1:0}})});
+  const workers={stateDir:dir,nautilusSettings:async()=>({python:'python3',targets:[]})};
+  const {extension,Run}=createCogAlpha(workers,{keys:['quality'],contract:'JSON-backed candidate',prepare:async()=>({}),score:async code=>({scores:{quality:code==='actual-code'?1:0}})});
   const registry=createRegistry();registry.install(extension);
   const h=await Harness.open(await openNodeSqliteStorage(join(dir,'pi.db')),{models,registry,onReport:r=>console.error(r)},ctx);
   try{

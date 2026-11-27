@@ -15,7 +15,7 @@
     <nav id="navigation">
       <a href="#overview" id="overviewLink"><span aria-hidden="true">▤</span><span data-i="overview"></span></a>
       <a href="#performance/paper" id="performanceLink"><span aria-hidden="true">↗</span><span data-i="performance"></span></a>
-      <a href="#models" id="modelSettingsButton"><span aria-hidden="true">⚙</span><span data-i="modelSettings"></span></a>
+      <a href="#settings" id="settingsLink"><span aria-hidden="true">⚙</span><span data-i="settings"></span></a>
     </nav>
     <div class="rail-reports"><h2 data-i="reports"></h2><nav id="runs"></nav></div>
     <label class="locale"><span data-i="language"></span><select id="lang"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
@@ -39,13 +39,102 @@
       </div>
       <div id="reviewContent" aria-busy="true"></div>
     </section>
-    <section id="modelSettings" hidden>
-<header class="mast"><div class="eyebrow">AlphaZonai</div><h1 data-i="modelSettings"></h1></header><p id="modelSettingsNotice" data-i="MODEL_SETTINGS_LOCAL" class="problem" hidden></p><div class="settings-grid"><section class="panel settings-card"><h2>ChatGPT</h2>
-<div id="chatGPTActions" class="actions"><button id="chatGPTStart" type="button" data-i="chatGPTStart"></button><button id="chatGPTCancel" type="button" data-i="chatGPTCancel" hidden></button><button id="chatGPTDisconnect" type="button" data-i="chatGPTDisconnect" hidden></button></div>
-<p id="chatGPTDevice" role="status" hidden><a id="chatGPTLink" target="_blank" rel="noopener noreferrer" data-i="chatGPTOpen"></a> <code id="chatGPTCode"></code></p><p id="chatGPTStatus" role="status"></p>
-</section><section class="panel settings-card"><h2>OpenAI API</h2><p id="modelConnection" role="status"></p><form id="modelKeyForm"><label><span data-i="modelApiKey"></span><input name="key" type="password" autocomplete="off" spellcheck="false" required></label><div class="actions"><button class="primary" data-i="connectModel" type="submit"></button><button data-i="disconnectModel" id="disconnectModel" type="button"></button><button data-i="refreshModels" id="refreshModels" type="button"></button></div></form>
-</section><section class="panel settings-card"><h2 data-i="defaultModel"></h2><form id="modelDefaultsForm"><label><span data-i="model"></span><select name="model" required></select></label><label><span data-i="thinking"></span><select name="thinking"></select></label><label><span data-i="speed"></span><select name="speed"></select></label><button class="primary" data-i="saveModelDefaults" type="submit"></button></form>
-</section></div></section>
+    <section id="settings" aria-labelledby="settingsTitle" hidden>
+      <header class="mast"><h1 id="settingsTitle" data-i="settings"></h1></header>
+      <nav id="settingsNav" class="review-modes" aria-labelledby="settingsTitle">
+        <a href="#settings" data-i="modelSettings"></a>
+        <a href="#settings/nautilus" data-i="nautilusSettings"></a>
+        <a href="#settings/review" data-i="reviewSettings"></a>
+        <a href="#settings/data" data-i="dataSettings"></a>
+      </nav>
+      <p id="settingsNotice" role="status"></p>
+      <div id="settings-model" class="settings-grid" hidden>
+        <section class="panel settings-card">
+          <h2>ChatGPT</h2>
+          <div class="actions">
+            <button id="chatGPTStart" type="button" data-i="chatGPTStart"></button>
+            <button id="chatGPTCancel" type="button" data-i="chatGPTCancel" hidden></button>
+            <button id="chatGPTDisconnect" type="button" data-i="chatGPTDisconnect" hidden></button>
+          </div>
+          <p id="chatGPTDevice" role="status" hidden><a id="chatGPTLink" target="_blank" rel="noopener noreferrer" data-i="chatGPTOpen"></a> <code id="chatGPTCode"></code></p>
+          <p id="chatGPTStatus" role="status"></p>
+        </section>
+        <section class="panel settings-card">
+          <h2>OpenAI API</h2><p id="modelConnection" role="status"></p>
+          <form id="modelKeyForm">
+            <label><span data-i="modelApiKey"></span><input name="key" type="password" autocomplete="off" spellcheck="false" required></label>
+            <div class="actions">
+              <button class="primary" data-i="connectModel" type="submit"></button>
+              <button data-i="disconnectModel" id="disconnectModel" type="button"></button>
+              <button data-i="refreshModels" id="refreshModels" type="button"></button>
+            </div>
+          </form>
+        </section>
+        <section class="panel settings-card">
+          <h2 data-i="defaultModel"></h2>
+          <form id="modelDefaultsForm">
+            <label><span data-i="model"></span><select name="model" required></select></label>
+            <label><span data-i="thinking"></span><select name="thinking"></select></label>
+            <label><span data-i="speed"></span><select name="speed"></select></label>
+            <button class="primary" data-i="saveModelDefaults" type="submit"></button>
+          </form>
+        </section>
+      </div>
+      <section id="settings-nautilus" class="panel settings-card" aria-labelledby="nautilusTitle" hidden>
+        <h2 id="nautilusTitle" data-i="nautilusSettings"></h2>
+        <form id="nautilusForm">
+          <label><span data-i="pythonInterpreter"></span><input name="python" spellcheck="false" required></label>
+          <label><span data-i="strategyToken"></span><input name="strategyToken" type="password" autocomplete="new-password" spellcheck="false"></label>
+          <label class="check" hidden><input name="clearToken" type="checkbox"><span data-i="clearToken"></span></label>
+          <h3 data-i="strategyTargets"></h3>
+          <div id="targetList"></div>
+          <button id="addTarget" type="button" data-i="addTarget"></button>
+          <button type="submit" class="primary" data-i="saveSettings"></button>
+        </form>
+      </section>
+      <template id="targetTemplate">
+        <fieldset class="target">
+          <legend data-i="strategyTarget"></legend>
+          <div class="field-pair">
+            <label><span data-i="targetId"></span><input name="id" spellcheck="false" required></label>
+            <label><span data-i="targetLabel"></span><input name="label" required></label>
+            <label><span data-i="targetKind"></span><select name="kind"><option value="local" data-i="localTarget"></option><option value="ssh">SSH</option></select></label>
+            <label><span data-i="targetRole"></span><select name="role"><option value="backtest" data-i="backtestRole"></option><option value="deploy" data-i="deployRole"></option><option value="both" data-i="bothRoles"></option></select></label>
+          </div>
+          <label><span data-i="localProfile"></span><input name="profile" spellcheck="false" required></label>
+          <label><span data-i="sshAlias"></span><input name="alias" spellcheck="false" required></label>
+          <label><span data-i="sshConfig"></span><input name="sshConfig" spellcheck="false" required></label>
+          <label><span data-i="marketContext"></span><textarea name="marketContext" rows="2" maxlength="3000"></textarea></label>
+          <button type="button" data-i="removeTarget"></button>
+        </fieldset>
+      </template>
+      <section id="settings-review" class="panel settings-card" aria-labelledby="reviewSettingsTitle" hidden>
+        <h2 id="reviewSettingsTitle" data-i="reviewSettings"></h2>
+        <form id="reviewForm">
+          <label class="check"><input name="enabled" type="checkbox"><span data-i="enableDailyReview"></span></label>
+          <label><span data-i="reviewTime"></span><input name="time" type="time" required></label>
+          <label><span data-i="reviewLanguage"></span><select name="language"><option value="zh-CN">简体中文</option><option value="en">English</option></select></label>
+          <label><span data-i="defaultReviewObjective"></span><textarea name="objective" rows="3" maxlength="2000"></textarea></label>
+          <button type="submit" class="primary" data-i="saveSettings"></button>
+        </form>
+      </section>
+      <section id="settings-data" class="panel settings-card" aria-labelledby="dataSettingsTitle" hidden>
+        <h2 id="dataSettingsTitle" data-i="dataSettings"></h2>
+        <form id="dataForm">
+          <label><span data-i="catalogPath"></span><input name="catalog" spellcheck="false" required></label>
+          <label><span data-i="agentToken"></span><input name="agentToken" type="password" autocomplete="new-password" spellcheck="false"></label>
+          <label class="check" hidden><input name="clearToken" type="checkbox"><span data-i="clearToken"></span></label>
+          <label><span data-i="stateDirectory"></span><input name="stateDir" spellcheck="false" required></label>
+          <div class="field-pair">
+            <label><span data-i="listenHost"></span><input name="host" spellcheck="false" required></label>
+            <label><span data-i="listenPort"></span><input name="port" type="number" min="1" max="65535" required></label>
+          </div>
+          <p class="subtle" data-i="restartSettings"></p>
+          <button class="primary" type="submit" data-i="saveSettings"></button>
+        </form>
+      </section>
+      <p id="settingsFeedback" role="status" hidden></p>
+    </section>
   </main>
 </body>
 </html>

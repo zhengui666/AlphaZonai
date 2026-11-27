@@ -10,23 +10,29 @@ import {Harness,createRegistry,defineExtension} from '@earendil-works/pi-durable
 import {openNodeSqliteStorage} from '@earendil-works/pi-durable/storage/sqlite/node';
 import {createModels} from '@earendil-works/pi-ai/models';
 import {createDailySchedule,DailyScheduleState,ensureDailySchedule} from '../src/daily-review.ts';
+import type {ReviewSettings} from '../src/settings.ts';
 import {importPerformance,performanceReport,PerformanceReport} from '../src/performance.ts';
 import {reviewContext} from '../src/review-analysis.ts';
 import {Reviews} from '../src/review.ts';
 
 test('daily schedule recovers missed days and retries late data and model setup once per mode',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'az-daily-'));
-  const due=Date.parse('2026-11-27T00:00:00Z'),halfHour=1_800_000;
+  const due=Date.parse('2026-11-26T22:45:00Z'),halfHour=1_800_000;
   let now=due-60_000,ready=false,modelChecks=0;
+  let prefs:ReviewSettings={enabled:true,time:'08:00',language:'zh-CN',objective:''};
   const task=createDailySchedule({
     modelSettings:async()=>{modelChecks++;return ready?{provider:'openai',model:'test',speed:null,thinking:'off'}:null;},
     startReview:async(tx,input,mode)=>{(await tx.doc(Reviews)).reviews[input.id]={...input,mode};},
   });
+  async function apply(h:Harness){
+    const old=await (await h.root(ctx)).commit(tx=>ensureDailySchedule(tx,task,now,prefs),ctx);
+    if(old)await h.abortTask(old,ctx);
+    h.resume();
+  }
   const start=async()=>{
     const registry=createRegistry();registry.install(defineExtension({name:'daily-test',tasks:[task]}));
     const h=await Harness.open(await openNodeSqliteStorage(join(dir,'pi.sqlite')),{models:createModels(),registry,now:()=>now},ctx);
-    await (await h.root(ctx)).commit(tx=>ensureDailySchedule(tx,task,now),ctx);
-    h.resume();return h;
+    await apply(h);return h;
   };
   let h=await start();
   async function advance(ms:number){await h.close(ctx);now=ms;h=await start();}
@@ -41,7 +47,11 @@ test('daily schedule recovers missed days and retries late data and model setup 
   const empty={id:randomUUID(),sessionId:randomUUID(),mode:'live',accountId:'ACCT-1',strategyId:'S-1',
     coverageStart:'2026-11-25T16:00:00Z',asOf:'2026-11-26T16:05:00Z',currencies:[],balances:[],positions:[],fills:[]};
   try{
+    const original=await finished(Date.parse('2026-11-27T00:00:00Z'));
+    prefs={...prefs,time:'06:45'};
+    await apply(h);
     const initial=await finished(due);
+    assert.notEqual(initial.task,original.task);
     assert.equal(initial.lastDate,null);
     await (await h.root(ctx)).commit(tx=>importPerformance(tx,performanceReport(empty)),ctx);
     await advance(due);
@@ -59,12 +69,16 @@ test('daily schedule recovers missed days and retries late data and model setup 
     for(const report of [early,paper,closing])await (await h.root(ctx)).commit(tx=>importPerformance(tx,report),ctx);
     await advance(due+halfHour);
     assert.equal((await finished(due+2*halfHour)).modes.paper?.status,'model_unavailable');
+    prefs={...prefs,language:'en',objective:'Review fills'};
+    await apply(h);
     ready=true;
     await advance(due+2*halfHour);
     const submitted=await finished(due+3*halfHour);
     assert.equal(submitted.modes.paper?.status,'queued');
     const id=submitted.modes.paper!.reviewId!;
     const review=(await h.snapshot(Reviews,ctx))!.reviews[id];
+    assert.equal(review.objective,'Review fills');
+    assert.equal(review.language,'en');
     assert.deepEqual(new Set(review.reportIds),new Set([early.id,paper.id,closing.id]));
     assert.deepEqual(review.period,{date:'2026-11-26',start:'2026-11-25T16:00:00.000Z',end:'2026-11-26T16:00:00.000Z'});
     const reports=await Promise.all(review.reportIds.map((key:string)=>h.snapshot(PerformanceReport,key,ctx)));
@@ -73,11 +87,22 @@ test('daily schedule recovers missed days and retries late data and model setup 
     assert.equal(context.reports[0].parameters[0].ref,early.id+'/parameter/entryThreshold');
     await advance(due+3*halfHour);
     assert.equal((await finished(due+4*halfHour)).modes.paper?.reviewId,id);
-    const afterOutage=due+96*halfHour;
+    prefs={...prefs,enabled:false};
+    await apply(h);
+    await advance(due+4*halfHour);
+    const disabled=(await h.snapshot(DailyScheduleState,ctx))!;
+    assert.equal(disabled.task,null);
+    assert.equal(disabled.nextAt,null);
+    assert.equal(disabled.nextCheckAt,null);
+    prefs={...prefs,enabled:true,time:'07:15'};
+    await apply(h);
+    const rescheduled=await finished(due+5*halfHour);
+    assert.equal(rescheduled.modes.paper?.reviewId,id);
+    const afterOutage=due+97*halfHour;
     await advance(afterOutage);
     const caughtUp=await finished(afterOutage+halfHour);
     assert.equal(caughtUp.lastDate,'2026-11-28');
-    assert.equal(caughtUp.task,initial.task);
+    assert.equal(caughtUp.task,rescheduled.task);
     assert.deepEqual(Object.keys((await h.snapshot(Reviews,ctx))!.reviews),[id]);
     assert.equal(modelChecks,2);
   }finally{await h.close(ctx);await rm(dir,{recursive:true,force:true});}

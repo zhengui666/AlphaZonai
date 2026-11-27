@@ -148,9 +148,12 @@ def _next_capture(as_of):
     return boundary if boundary > captured else boundary + timedelta(days=1)
 
 
-def _import_report(report):
+def _import_report(report, token_file: str, url: str | None):
+    command = ["alphazonai", "performance", "import", "--report-file", "-", "--token-file", token_file]
+    if url is not None:
+        command.extend(["--url", url])
     result = subprocess.run(
-        ["alphazonai", "performance", "import", "--report-file", "-"],
+        command,
         input=json.dumps(report, allow_nan=False), text=True, capture_output=True, timeout=60,
     )
     if result.returncode:
@@ -164,7 +167,8 @@ def _import_report(report):
         raise RuntimeError(result.stderr.strip() or f"alphazonai exited with status {result.returncode}")
 
 
-async def publish_daily_performance(node, *, mode: str, account_id: str, strategy_id: str, parameters=None):
+async def publish_daily_performance(node, *, mode: str, account_id: str, strategy_id: str, token_file: str,
+                                    url: str | None = None, parameters=None):
     """Publish one snapshot on attachment and at 00:05 Asia/Shanghai on the node's event loop."""
     pending = None
     while True:
@@ -177,7 +181,7 @@ async def publish_daily_performance(node, *, mode: str, account_id: str, strateg
                     coverage_start=previous_day.replace(hour=0, minute=0, second=0, microsecond=0),
                 )
             # Native cache access stays on the node thread. Encoding and HTTP run outside it.
-            await asyncio.to_thread(_import_report, pending)
+            await asyncio.to_thread(_import_report, pending, token_file, url)
         except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
             logging.getLogger(__name__).warning("Performance publish for %s/%s will retry: %s", account_id, strategy_id, error)
             await asyncio.sleep(300)

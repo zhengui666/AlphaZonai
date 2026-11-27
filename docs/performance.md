@@ -6,18 +6,19 @@ change the strategy, adjust its role in the portfolio or retest a parameter.
 
 ## Daily review
 
-Pi Durable schedules the review when AlphaZonai starts. Every day at 08:00
-Beijing time it reviews the previous Shanghai calendar day, from local
+In **Settings → Performance review settings**, choose whether to run daily
+reviews and when to start them. The default is 08:00 Shanghai time. At the
+selected time Pi Durable reviews the previous Shanghai calendar day, from local
 midnight up to the next midnight. Paper and live trading each get their
 own review. Each active environment uses the default model for diagnosis
 and for the three adjustment judgments. A day without observable activity
 only updates the schedule status. Closing the dashboard leaves the schedule
 running.
 
-Choose a default model in Model Settings and connect each account and
-strategy on its existing Nautilus node once. Install this release's CLI on
-the node's PATH and set its usual `ALPHAZONAI_URL` and `ALPHA_STRATEGY_TOKEN`.
-In the node's host process, register the publisher on the existing node loop.
+Select a default in **Settings → Model settings** and set a strategy token
+in **NautilusTrader settings**. Install the matching CLI on the Nautilus node
+and give its publisher a private file containing that token. Register the
+publisher on the existing node loop for each account and strategy.
 
 ```python
 from quant.performance import publish_daily_performance
@@ -25,11 +26,14 @@ from quant.performance import publish_daily_performance
 publisher = node.get_event_loop().create_task(
     publish_daily_performance(
         node, mode="paper", account_id="SIM-001", strategy_id="Trend-001",
+        token_file="/etc/alphazonai/strategy.token",
     )
 )
 ```
 
-Use the actual Nautilus identifiers. Retain the task handle and call
+Use the actual Nautilus identifiers. The CLI defaults to
+`http://127.0.0.1:8787`. Pass `url="https://your-service.example"` to the
+publisher for a remote instance. Retain the task handle and call
 `publisher.cancel()` when the host stops. The publisher captures once on
 attachment and then at 00:05 Beijing time. Its snapshots cover the native
 cache from the previous local midnight to capture time. It uploads via the
@@ -53,9 +57,10 @@ Use `alphazonai performance review-list` to look up reviews and schedule status.
 
 ## On-demand review
 
-Select a default model in Model Settings. Choose the main report and
-optionally add other strategies, a paper execution of the same strategy, or
-an earlier snapshot. Add the decision you are considering. For an allocation
+Select a default in **Settings → Model settings**. Review requests inherit the
+language and objective in **Performance review settings** unless overridden.
+Choose the main report and optionally add other strategies, a paper execution
+of the same strategy, or an earlier snapshot. Add the decision you are considering. For an allocation
 question, include current weights and constraints when available. For a
 parameter question, include the current setting or select it at export.
 
@@ -102,11 +107,13 @@ with the specific settings under review, for example
 `parameters={"entry_threshold": strategy.config.entry_threshold}` for a
 strategy that defines that field. The host selects the values to share.
 
-Import the resulting file with `alphazonai performance import --report-file FILE`.
-Each report can be up to 32 MiB. The CLI uses `ALPHAZONAI_URL` and the
-existing `ALPHA_STRATEGY_TOKEN`. The importing machine needs the report and
-service access. Exchange credentials
-stay on the trading host.
+Import the resulting file with the same strategy token. Use `--url` for a
+remote instance. Each report can be up to 32 MiB. Exchange credentials stay
+on the trading host.
+
+```sh
+alphazonai performance import --report-file report.json --token-file /etc/alphazonai/strategy.token
+```
 
 A snapshot covers the history visible in the native cache at capture. A cache
 restored across restarts can include earlier trades. A pruned cache can omit

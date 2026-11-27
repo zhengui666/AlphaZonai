@@ -5,49 +5,50 @@ import {fileURLToPath} from 'node:url';
 import {BACKGROUND_CONTEXT as ctx} from '@earendil-works/chord/context';
 import {Harness,createRegistry,configure,defineExtension,type Tx} from '@earendil-works/pi-durable';
 import {openNodeSqliteStorage} from '@earendil-works/pi-durable/storage/sqlite/node';
-import {createModels} from '@earendil-works/pi-ai/models';
-import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
-import {openaiCodexProvider} from '@earendil-works/pi-ai/providers/openai-codex';
 import {createCogAlpha,Runs,Resume,setModelSpeed} from './extension.ts';
 import {paper,minute} from './method.ts';
 import {agentWriteError,researchDirection,runAdmission,sameRunAdmission} from './research-context.ts';
-import {chatGPTLogin,checkOpenAIKey,choice,isLocalSettingsHost,modelStore,modelView,recordedStrategyModel,type ModelChoice} from './model-settings.ts';
-
-import {authorizedStrategyWrite,readTargets,strategyEvidence,strategyId} from './strategy.ts';
+import {chatGPTLogin,checkOpenAIKey,choice,createSettingsModels,modelStore,modelView,recordedStrategyModel,type ModelChoice} from './model-settings.ts';
+import {applySettings,localSettingsRequest,settingsStore} from './settings.ts';
+import {authorizedStrategyWrite,strategyEvidence,strategyId} from './strategy.ts';
 import {importPerformance,performanceReport,PerformanceIndex,PerformanceReport} from './performance.ts';
 import {Reviews,ReviewInputs,reviewRequest,sameReviewRequest} from './review.ts';
 import {createDailySchedule,DailyScheduleState,ensureDailySchedule} from './daily-review.ts';
 
-const state=resolve(process.env.ALPHA_STATE||'state');
-const catalog=resolve(process.env.ALPHA_CATALOG||'/catalog');
-const modelPrefs=modelStore(state);
-const models=createModels({credentials:modelPrefs.credentials});
-models.setProvider(openaiProvider());
-models.setProvider(openaiCodexProvider());
+const container=process.argv.includes('--container');
+const store=settingsStore(container?'/state':resolve('state'),container?'0.0.0.0':'127.0.0.1');
+const {data:startup}=await store.read();
+const nautilusSettings=async()=>(await store.read()).nautilus;
+const modelPrefs=modelStore(store);
+const models=createSettingsModels(modelPrefs.credentials);
 const chatGPT=chatGPTLogin(models);
 const registry=createRegistry();
-const {extension,Run,StrategyBuild,StrategyPush,PerformanceReview}=createCogAlpha();
+const {extension,Run,StrategyBuild,StrategyPush,PerformanceReview}=createCogAlpha({stateDir:startup.stateDir,nautilusSettings});
 registry.install(extension);
 const DailySchedule=createDailySchedule({modelSettings:reviewModel,startReview});
 registry.install(defineExtension({name:'alphazonai.daily',tasks:[DailySchedule]}));
-await mkdir(state,{recursive:true});
-const harness=await Harness.open(await openNodeSqliteStorage(join(state,'pi.sqlite')),{models,registry},ctx);
+await mkdir(startup.stateDir,{recursive:true});
+const harness=await Harness.open(await openNodeSqliteStorage(join(startup.stateDir,'pi.sqlite')),{models,registry},ctx);
 const root=await harness.root(ctx);
-await root.commit(tx=>ensureDailySchedule(tx,DailySchedule,Date.now()),ctx);
-harness.resume();
+async function syncDailySchedule(){
+  const retired=await root.commit(async tx=>ensureDailySchedule(tx,DailySchedule,Date.now(),(await store.read()).review),ctx);
+  if(retired)await harness.abortTask(retired,ctx);
+  harness.resume();
+}
+await syncDailySchedule();
 
 const site=fileURLToPath(new URL('../web/',import.meta.url));
-const assets:Record<string,string>={'/':'index.html','/style.css':'style.css','/app.js':'app.js','/locale.js':'locale.js','/reviews.js':'reviews.js'};
+const assets:Record<string,string>={'/':'index.html','/style.css':'style.css','/app.js':'app.js','/locale.js':'locale.js','/reviews.js':'reviews.js','/settings.js':'settings.js'};
 const mime:Record<string,string>={html:'text/html',css:'text/css',js:'text/javascript'};
 const snapshot=async()=>((await harness.snapshot(Runs,root.id,ctx))?.runs||{}) as Record<string,any>;
 const send=(res:any,status:number,result:any)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(result));};
-async function body(req:any,report=false){
-  const limit=report?32*1024*1024:16000;
+async function body(req:any,kind?:'report'|'settings'){
+  const limit=kind==='report'?32*1024*1024:kind==='settings'?1024*1024:16000;
   let data='',size=0;
   req.setEncoding('utf8');
   for await(const chunk of req.iterator({destroyOnReturn:false})){
-    size+=report?Buffer.byteLength(chunk):chunk.length;
-    if(size>limit){req.resume();throw Error(report?'PERFORMANCE_REPORT_TOO_LARGE':'BAD_REQUEST');}
+    size+=Buffer.byteLength(chunk);
+    if(size>limit){req.resume();throw Error(kind==='report'?'PERFORMANCE_REPORT_TOO_LARGE':'BAD_REQUEST');}
     data+=chunk;
   }
   try{return JSON.parse(data);}catch{throw new Error('BAD_REQUEST');}
@@ -76,17 +77,19 @@ async function startReview(tx:Tx,input:ReviewInput,mode:'paper'|'live',modelSett
   reviews[input.id]={...input,mode,modelSettings,task,created:new Date().toISOString(),status:'diagnosing'};
   return true;
 }
-async function settings(local:boolean){
-  const stored=await modelPrefs.savedKey();
-  return {connected:Boolean(await models.checkAuth('openai')),stored,chatGPTConnected:await modelPrefs.savedChatGPT(),
-    chatGPT:local?chatGPT.view():null,defaults:await modelPrefs.defaults(),models:await availableModels(),writable:local};
+async function settingsView(local:boolean){
+  if(!local)return {writable:false};
+  const {model,nautilus:{strategyToken,...nautilus},review,data:{agentToken,...data}}=await store.read();
+  return {writable:true,model:{connected:model.openai?.type==='api_key',chatGPTConnected:model['openai-codex']?.type==='oauth',
+    chatGPT:chatGPT.view(),defaults:model.defaults??null,models:await availableModels()},
+    nautilus:{...nautilus,strategyTokenConfigured:Boolean(strategyToken)},review,data:{...data,agentTokenConfigured:Boolean(agentToken)}};
 }
 async function input(raw:any){
   const validDate=(x:unknown)=>typeof x==='string'&&/^\d{4}-\d\d-\d\d$/.test(x)&&Number.isFinite(Date.parse(x))&&new Date(x).toISOString().slice(0,10)===x;
   if(!raw||!['paper','minute'].includes(raw.preset)||!validDate(raw.start)||!validDate(raw.end)||raw.start>=raw.end)throw new Error('INVALID_DATES');
   const horizon=Number(raw.horizon),seed=Number(raw.seed);
   if(!Number.isSafeInteger(horizon)||horizon<1||!Number.isSafeInteger(seed))throw new Error('BAD_REQUEST');
-  const defaults=await modelPrefs.defaults();
+  const {model:{defaults},data:{catalog}}=await store.read();
   const available=await availableModels();
   if(!available.length)throw Error('MODEL_CREDENTIAL');
   const selected=choice({provider:raw.provider??(raw.model?'openai':defaults?.provider),model:raw.model||defaults?.model,thinking:raw.thinking??defaults?.thinking,
@@ -107,25 +110,32 @@ function strategyDate(x:any){
   const date=new Date(x).toISOString();
   return date.slice(0,10)===x?date:null;
 }
+// A connection published on the Docker host's loopback can arrive from its bridge gateway.
+const routes=container?await readFile('/proc/net/route','utf8').catch(()=>''):'';
+const gatewayHex=routes.split('\n').map(line=>line.trim().split(/\s+/)).find(([,destination])=>destination==='00000000')?.[2];
+const gateway=gatewayHex&&[...Buffer.from(gatewayHex,'hex')].reverse().join('.');
 const server=createServer(async (req,res)=>{
   try{
     const url=new URL(req.url||'/', 'http://localhost');
     const path=url.pathname;
     const method=req.method;
+    const local=localSettingsRequest(req.headers.host,req.socket,gateway);
     if(method==='GET'&&Object.hasOwn(assets,path)){
       const name=assets[path];res.writeHead(200,{'Content-Type':mime[name.split('.').at(-1)!]+';charset=utf-8','Content-Security-Policy':"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(await readFile(join(site,name)));return;
     }
     if(method==='POST'&&(path==='/api/runs'||path==='/api/performance'||/^\/api\/runs\/[0-9a-f-]{36}\/(actions|strategies)$/.test(path))){
       const isStrategy=path.endsWith('/strategies')||path==='/api/performance';
       const problem=agentWriteError({origin:req.headers.origin,browser:req.headers['sec-fetch-site'],
-        authorization:req.headers.authorization,localHost:isStrategy||isLocalSettingsHost(req.headers.host)},
-        isStrategy?undefined:process.env.ALPHA_AGENT_TOKEN);
+        authorization:req.headers.authorization,localHost:isStrategy||local},
+        isStrategy?undefined:(await store.read()).data.agentToken);
       if(problem)return send(res,problem==='WEB_READ_ONLY'?403:401,{error:problem});
     }
-    if(method==='POST' && (req.headers.origin && new URL(req.headers.origin).host!==req.headers.host || !req.headers['content-type']?.startsWith('application/json')))return send(res,403,{error:'BAD_REQUEST'});
+    const origin=req.headers.origin;
+    if(method==='POST'&&((origin!==undefined&&(!URL.canParse(origin)||new URL(origin).host!==req.headers.host))||
+       !req.headers['content-type']?.startsWith('application/json')))return send(res,403,{error:'BAD_REQUEST'});
     if(path==='/api/performance'&&method==='POST'){
-      if(!authorizedStrategyWrite(req.headers.authorization))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
-      const report=performanceReport(await body(req,true));
+      if(!authorizedStrategyWrite(req.headers.authorization,(await nautilusSettings()).strategyToken))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
+      const report=performanceReport(await body(req,'report'));
       const status=await root.commit(tx=>importPerformance(tx,report),ctx);
       return send(res,status,status===409?{error:'PERFORMANCE_ID_CONFLICT'}:{id:report.id});
     }
@@ -135,13 +145,15 @@ const server=createServer(async (req,res)=>{
       return send(res,200,{reports});
     }
     if(path==='/api/performance/reviews'&&method==='POST'){
+      const {nautilus,review}=await store.read();
       if(req.headers.origin||req.headers['sec-fetch-site']){
-        if(!req.headers.origin||!isLocalSettingsHost(req.headers.host))return send(res,403,{error:'WEB_READ_ONLY'});
-      }else if(!authorizedStrategyWrite(req.headers.authorization))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
-      const input=reviewRequest(await body(req));
+        if(!req.headers.origin||!local)return send(res,403,{error:'WEB_READ_ONLY'});
+      }else if(!authorizedStrategyWrite(req.headers.authorization,nautilus.strategyToken))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
+      const raw=await body(req);
+      const prior=(await harness.snapshot(Reviews,ctx))?.reviews[raw?.id];
+      const input=reviewRequest(raw,prior??review);
       const {id,reportIds}=input;
       const reply=(ok:boolean)=>send(res,ok?202:409,ok?{id}:{error:'REVIEW_ID_CONFLICT'});
-      const prior=(await harness.snapshot(Reviews,ctx))?.reviews[id];
       if(prior)return reply(prior.trigger!=='daily'&&sameReviewRequest(prior,input));
       const reports=(await harness.snapshot(PerformanceIndex,ctx))?.reports??{};
       const selected=reportIds.map((key:string)=>reports[key]);
@@ -167,8 +179,9 @@ const server=createServer(async (req,res)=>{
       }).map(({id,status,created,reportIds,objective,mode,trigger,period})=>({id,status,created,reportIds,objective,mode,trigger:trigger??'manual',period}))
         .sort((a,b)=>b.created.localeCompare(a.created));
       const schedule=await harness.snapshot(DailyScheduleState,ctx);
-      const daily=schedule&&{nextAt:schedule.nextAt,nextCheckAt:schedule.nextCheckAt,lastDate:schedule.lastDate,modes:schedule.modes};
-      return send(res,200,{reviews,daily,writable:isLocalSettingsHost(req.headers.host)});
+      const daily=schedule&&{enabled:Boolean(schedule.task),time:schedule.settings?.time,
+        nextAt:schedule.nextAt,nextCheckAt:schedule.nextCheckAt,lastDate:schedule.lastDate,modes:schedule.modes};
+      return send(res,200,{reviews,daily,writable:local});
     }
     if(method==='GET'&&path.startsWith('/api/performance/reviews/')){
       const id=path.slice('/api/performance/reviews/'.length);
@@ -183,14 +196,20 @@ const server=createServer(async (req,res)=>{
       return report?send(res,200,report):send(res,404,{error:'NOT_FOUND'});
     }
     if(path==='/api/strategy-targets'&&method==='GET'){
-      const targets=await readTargets();
-      return send(res,200,{targets:targets.map(({id,label,roles})=>({id,label,roles})),enabled:Boolean(process.env.ALPHA_STRATEGY_TOKEN)});
+      const {targets,strategyToken}=await nautilusSettings();
+      return send(res,200,{targets:targets.map(({id,label,roles})=>({id,label,roles})),enabled:Boolean(strategyToken)});
     }
     if(path==='/api/models'&&method==='GET')return send(res,200,{models:await availableModels()});
-    if(path==='/api/model-settings'&&method==='GET')return send(res,200,await settings(isLocalSettingsHost(req.headers.host)));
-    if(path==='/api/model-settings'&&method==='POST'){
-      if(!isLocalSettingsHost(req.headers.host)||!req.headers.origin)return send(res,403,{error:'MODEL_SETTINGS_LOCAL'});
-      const raw=await body(req);
+    if(path==='/api/settings'&&method==='GET')return send(res,200,await settingsView(local));
+    const section=path.match(/^\/api\/settings\/(model|nautilus|review|data)$/)?.[1];
+    if(section&&method==='POST'){
+      if(!local||(!origin&&req.headers['sec-fetch-site']))return send(res,403,{error:'SETTINGS_LOCAL'});
+      const raw=await body(req,'settings');
+      if(section!=='model'){
+        await store.edit(s=>applySettings(s,section,raw));
+        if(section==='review')await syncDailySchedule();
+        return send(res,200,await settingsView(true));
+      }
       if(raw?.action==='connect'){
         const key=await checkOpenAIKey(raw.key);
         await modelPrefs.credentials.modify('openai',async()=>({type:'api_key',key}));
@@ -205,7 +224,7 @@ const server=createServer(async (req,res)=>{
       }else if(raw?.action==='defaults'){
         await modelPrefs.save(choice(raw,await availableModels()));
       }else throw Error('BAD_REQUEST');
-      return send(res,200,await settings(true));
+      return send(res,200,await settingsView(true));
     }
     if(path==='/api/runs'&&method==='GET'){
       const runs=await snapshot();
@@ -242,11 +261,12 @@ const server=createServer(async (req,res)=>{
         const {admission,...report}=run;return send(res,200,report);
       }
       if(action==='strategies'&&method==='POST'){
-        if(!authorizedStrategyWrite(req.headers.authorization))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
+        const {targets,strategyToken}=await nautilusSettings();
+        if(!authorizedStrategyWrite(req.headers.authorization,strategyToken))return send(res,401,{error:'STRATEGY_AUTH_REQUIRED'});
         const raw=await body(req);
         if(typeof raw?.id!=='string'||!strategyId.test(raw.id)||typeof raw.target!=='string'||!['build','push'].includes(raw.action))
           return send(res,400,{error:'BAD_REQUEST'});
-        const selectedTarget=(await readTargets()).find(x=>x.id===raw.target);
+        const selectedTarget=targets.find(x=>x.id===raw.target);
         if(!selectedTarget?.roles.includes(raw.action==='build'?'backtest':'deploy'))return send(res,404,{error:'STRATEGY_TARGET_MISSING'});
         if(raw.action==='build'){
           const provider=run.provider??'openai';
@@ -326,11 +346,11 @@ const server=createServer(async (req,res)=>{
     return send(res,404,{error:'NOT_FOUND'});
   } catch(e:any){
     if(e.message==='PERFORMANCE_REPORT_TOO_LARGE')return send(res,413,{error:e.message});
-    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED','SPEED_UNSUPPORTED','MODEL_KEY_INVALID','MODEL_CONNECTION_FAILED','MODEL_CREDENTIAL','INVALID_RESEARCH_DIRECTION','INVALID_PERFORMANCE_REPORT'];
+    const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED','SPEED_UNSUPPORTED','MODEL_KEY_INVALID','MODEL_CONNECTION_FAILED','MODEL_CREDENTIAL','STRATEGY_TARGET_CONFIG','INVALID_RESEARCH_DIRECTION','INVALID_PERFORMANCE_REPORT'];
     if(!known.includes(e.message))console.error(e);
     if(!res.headersSent)send(res,known.includes(e.message)?400:500,{error:known.includes(e.message)?e.message:'SERVER_ERROR'});
     else res.end();
   }
 });
-server.listen(Number(process.env.PORT||8787),process.env.ALPHA_HOST||'127.0.0.1');
+server.listen(startup.port,startup.host);
 for(const sig of ['SIGINT','SIGTERM'])process.once(sig,async ()=>{server.close();server.closeAllConnections();await harness.close(ctx);process.exit(0);});

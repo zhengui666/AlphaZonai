@@ -2,9 +2,8 @@
 
 Use the CLI from the same release as the service. The command examples assume
 `node cli/alphazonai.mjs` is installed as `alphazonai`. No dependency install is
-needed for this CLI. The default origin is `http://127.0.0.1:25447`. Set
-`ALPHAZONAI_URL` or pass `--url` for another instance; non-loopback transport
-requires HTTPS. Never redirect a write to a second instance after an error.
+needed for this CLI. The default origin is `http://127.0.0.1:8787`.
+Pass `--url` for another instance. Use HTTPS for non-loopback addresses.
 
 ## Output and discovery
 
@@ -17,14 +16,35 @@ requires HTTPS. Never redirect a write to a second instance after an error.
   `{ok:false,contract:1,error:{code,message,...}}` object to stderr and exit
   nonzero: 2 input/output, 3 API or missing evidence, 4 transport/response, 5
   wait timeout, 1 unexpected. Check both exit code and the terminal state.
-- Add `--dry-run` to writes to inspect the request locally. It reads explicit
-  input files but performs no network request. It does not prove server
-  authorization, funds, data coverage or that a target exists.
+- Add `--dry-run` to preview a write locally. A settings preview shows the
+  section URL and field names. Credentials for protected writes are read from
+  `--token-file FILE` on submission.
 - Watched terminal run states: completed, failed, stopped; paused also returns.
   Strategy states: validated or failed. Staging states: staged or failed.
   Timeout is local only. To resume observation use the same IDs.
 - `--output` on an export writes the raw artifact at an exclusively created
   path. Without it, inspect `data` in the JSON envelope.
+
+## Settings
+
+Use the same loopback address as the dashboard, directly or through an SSH
+tunnel. Each update changes one section. Include only the fields you want
+to change. A supplied `targets` array replaces the receiver list.
+
+```sh
+alphazonai settings get --pretty
+alphazonai schema settings set
+alphazonai settings set --section model --file private-model.json
+alphazonai settings set --section nautilus --file receivers.json
+printf '%s\n' '{"enabled":true,"time":"09:30"}' | alphazonai settings set --section review --file -
+printf '%s\n' '{"catalog":"/mnt/market-data"}' | alphazonai settings set --section data --file -
+```
+
+An OpenAI connection file contains `action` set to `connect` and a `key`.
+For ChatGPT, submit `{"action":"chatgpt-start"}` and open the device URL from
+`data.model.chatGPT` once its status is `waiting`. After connecting, select
+a model from `models list` with the `defaults` action. A receiver update
+contains `targets` using the local or SSH target format. [Strategy delivery](../docs/strategy-delivery.md)
 
 ## From research to staging
 
@@ -37,13 +57,13 @@ alphazonai id
 alphazonai runs start --id "$RUN_ID" --start 2026-10-01 --end 2026-10-08 \
   --direction-file direction.txt --dry-run
 alphazonai runs start --id "$RUN_ID" --start 2026-10-01 --end 2026-10-08 \
-  --direction-file direction.txt
+  --direction-file direction.txt --token-file agent.token
 alphazonai runs wait --id "$RUN_ID" --wait-ms 30000
 alphazonai runs get --id "$RUN_ID"
 alphazonai strategies targets
 alphazonai id
 alphazonai strategies build --id "$RUN_ID" --strategy "$STRATEGY_ID" \
-  --target "$BACKTEST_TARGET" --start 2026-10-08 --end 2026-10-15
+  --target "$BACKTEST_TARGET" --start 2026-10-08 --end 2026-10-15 --token-file strategy.token
 alphazonai strategies wait --id "$RUN_ID" --strategy "$STRATEGY_ID"
 alphazonai strategies export --id "$RUN_ID" --strategy "$STRATEGY_ID" --output strategy.json
 ```
@@ -54,7 +74,7 @@ After a separate request to stage the validated version:
 alphazonai strategies push --id "$RUN_ID" --strategy "$STRATEGY_ID" \
   --target "$DEPLOY_TARGET" --dry-run
 alphazonai strategies push --id "$RUN_ID" --strategy "$STRATEGY_ID" \
-  --target "$DEPLOY_TARGET"
+  --target "$DEPLOY_TARGET" --token-file strategy.token
 alphazonai strategies wait --id "$RUN_ID" --strategy "$STRATEGY_ID" --target "$DEPLOY_TARGET"
 ```
 
@@ -68,7 +88,7 @@ Export a snapshot from an existing Nautilus node as described in
 strategy token and retain the report ID returned by the service.
 
 ```sh
-alphazonai performance import --report-file report.json
+alphazonai performance import --report-file report.json --token-file strategy.token
 alphazonai performance list
 alphazonai performance show --id "$REPORT_ID"
 ```
@@ -84,13 +104,14 @@ alphazonai performance review-list
 alphazonai performance review-show --review "$REVIEW_ID"
 ```
 
-For a manual review, set a default model in the local dashboard. Use a fresh
-review UUID and optionally add comparison reports and a question. Reuse the review UUID
+For a manual review, choose a default model in Settings or through `settings set`.
+For the saved review language and objective, omit those options. Use a fresh review
+UUID and optionally add comparison reports and a question. Reuse the review UUID
 and identical inputs if the response is lost.
 
 ```sh
 alphazonai performance review --id "$LIVE_REPORT" --with "$PAPER_REPORT" \
-  --review "$REVIEW_ID" --language en \
+  --review "$REVIEW_ID" --language en --token-file strategy.token \
   --objective "Did costs explain the difference? Evaluate changing the entry threshold."
 alphazonai performance review-show --review "$REVIEW_ID"
 ```

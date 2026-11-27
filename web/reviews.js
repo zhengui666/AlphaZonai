@@ -51,7 +51,7 @@ export function aiReview(mode,report,reports,ui,signal){
   function notice(text,isError=false){
     message.hidden=!text;message.className=isError?'problem':'subtle';message.replaceChildren();
     if(text)message.append(node('span',t(text)));
-    if(text==='MODEL_REQUIRED'||text==='MODEL_CREDENTIAL')message.append(' ',link(t('modelSettings'),'#models'));
+    if(text==='MODEL_REQUIRED'||text==='MODEL_CREDENTIAL')message.append(' ',link(t('modelSettings'),'#settings'));
   }
   function populate(){
     history.hidden=!jobs.length;
@@ -59,8 +59,9 @@ export function aiReview(mode,report,reports,ui,signal){
     history.value=selected||'';
   }
   function drawSchedule(){
-    schedule.replaceChildren(node('strong',t('dailyReview')),node('p',t('dailySchedule'),'subtle'));
+    schedule.replaceChildren(node('strong',t('dailyReview')));
     if(!daily)return;
+    schedule.append(node('p',daily.enabled?t('dailySchedule').replace('{time}',daily.time):t('dailyDisabled'),'subtle'));
     const rows=[];
     const local=new Intl.DateTimeFormat(lang,{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Shanghai',hourCycle:'h23'});
     if(daily.nextAt)rows.push([t('nextDaily'),local.format(new Date(daily.nextAt))]);
@@ -71,7 +72,7 @@ export function aiReview(mode,report,reports,ui,signal){
       rows.push([t('lastDaily'),daily.lastDate+' · '+t(job?'review_'+job.status:'daily_'+last.status)]);
     }
     if(rows.length)schedule.append(properties(rows));
-    if(last?.status==='model_unavailable')schedule.append(link(t('modelSettings'),'#models'));
+    if(daily.enabled&&last?.status==='model_unavailable')schedule.append(link(t('modelSettings'),'#settings'));
   }
   function timeWindow(context){
     const p=context.commonWindow;
@@ -216,7 +217,7 @@ export function aiReview(mode,report,reports,ui,signal){
     const key=JSON.stringify([reportIds,objective]);
     if(lastRequest?.key!==key)lastRequest={key,id:crypto.randomUUID()};
     try{
-      const {id}=await api(base,{id:lastRequest.id,reportIds,objective,language:lang},signal);
+      const {id}=await api(base,{id:lastRequest.id,reportIds,objective:objective||undefined},signal);
       lastReview.set(historyKey,id);await list(id);manual.open=false;lastRequest=undefined;
     }catch(e){if(!signal.aborted)notice(e.message,true);}
     finally{start.disabled=false;}

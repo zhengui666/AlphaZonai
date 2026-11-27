@@ -109,20 +109,31 @@ class PerformanceTest(unittest.TestCase):
 class DailyPublisherTest(unittest.IsolatedAsyncioTestCase):
     def test_oversize_import_does_not_block_following_captures(self):
         response = SimpleNamespace(returncode=3, stderr='{"error":{"httpStatus":413}}')
-        with patch("quant.performance.subprocess.run", return_value=response), self.assertLogs("quant.performance", level="ERROR"):
-            _import_report({"id": str(uuid4())})
+        with patch("quant.performance.subprocess.run", return_value=response) as run, \
+             self.assertLogs("quant.performance", level="ERROR"):
+            _import_report({"id": str(uuid4())}, "strategy.token", None)
+        self.assertEqual(run.call_args.args[0], [
+            "alphazonai", "performance", "import", "--report-file", "-", "--token-file", "strategy.token",
+        ])
 
     async def test_retries_the_same_snapshot_before_capturing_again(self):
         report = {"id": str(uuid4()), "asOf": "2026-11-27T16:01:00+00:00"}
+        response = SimpleNamespace(returncode=0)
+        origin = "https://research.example"
         with patch("quant.performance.performance_report", return_value=report) as capture, \
-             patch("quant.performance._import_report", side_effect=[OSError("offline"), None]) as send, \
+             patch("quant.performance.subprocess.run", side_effect=[OSError("offline"), response]) as send, \
              patch("quant.performance.asyncio.sleep", side_effect=[None, asyncio.CancelledError]) as sleep:
             with self.assertLogs("quant.performance"), self.assertRaises(asyncio.CancelledError):
                 await publish_daily_performance(object(), mode="paper", account_id="SIM-001", strategy_id="Trend-001",
-                                                parameters=lambda: {"period": 9})
+                                                token_file="strategy.token", url=origin, parameters=lambda: {"period": 9})
         self.assertEqual(capture.call_count, 1)
         self.assertEqual(capture.call_args.kwargs["parameters"], {"period": 9})
-        self.assertEqual([call.args[0] for call in send.call_args_list], [report, report])
+        self.assertEqual(send.call_count, 2)
+        self.assertEqual(send.call_args_list[0], send.call_args_list[1])
+        self.assertEqual(json.loads(send.call_args.kwargs["input"]), report)
+        self.assertEqual(send.call_args.args[0], [
+            "alphazonai", "performance", "import", "--report-file", "-", "--token-file", "strategy.token", "--url", origin,
+        ])
         self.assertEqual(sleep.call_args_list[0].args, (300,))
         self.assertEqual(_next_capture(report["asOf"]).isoformat(), "2026-11-28T00:05:00+08:00")
         self.assertEqual(_next_capture("2026-11-27T16:05:00Z").isoformat(), "2026-11-29T00:05:00+08:00")

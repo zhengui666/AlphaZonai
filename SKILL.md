@@ -1,17 +1,18 @@
 ---
 name: alphazonai
-description: Use when asked to run or monitor AlphaZonai factor research, set a research direction, review research evidence, generate and backtest a native Nautilus strategy, stage a strategy, or import and review Nautilus paper and live performance reports.
+description: Use when asked to configure AlphaZonai models, NautilusTrader, performance reviews or data, run or monitor factor research, review research evidence, generate and backtest a native Nautilus strategy, stage a strategy, or import and review paper and live performance reports.
 compatibility: Requires Node.js 24+ and network access to an authorized AlphaZonai instance. Use the matching repository release's cli/alphazonai.mjs or its installed alphazonai command.
 ---
 
 # AlphaZonai
 
-Use the CLI for external automation. The Web dashboard presents research evidence; use Model settings there for model credentials and defaults.
+Use the CLI for external automation. The CLI and dashboard Settings page update the same saved configuration.
 
 ## Choose the next command
 
 | Task | Command |
 | --- | --- |
+| Read settings or update one section | `alphazonai settings get`, `alphazonai settings set --section SECTION --file FILE` |
 | Check connectivity and available inputs | `alphazonai doctor`, `alphazonai models list` |
 | Start research with a specified direction | `alphazonai runs start` |
 | Check an existing run or see the full report | `alphazonai runs get --id RUN_ID` |
@@ -27,7 +28,24 @@ Use the CLI for external automation. The Web dashboard presents research evidenc
 | Read daily review status and find a review by ID | `alphazonai performance review-list`, then `alphazonai performance review-show --review REVIEW_UUID` |
 | Ask AI to assess strategy, allocation and parameters | `alphazonai performance review --id REPORT_ID --review REVIEW_UUID`, then `alphazonai performance review-show --review REVIEW_UUID` |
 
-Set `ALPHAZONAI_URL` to the instance origin if it is not local. If the CLI is not on your PATH, substitute `node cli/alphazonai.mjs` for `alphazonai` from the repository checkout. Run `alphazonai schema` or `alphazonai schema runs start` for exact flags. If an authorized host supplies tokens, read them from `ALPHA_AGENT_TOKEN` and `ALPHA_STRATEGY_TOKEN`; never put credentials in shell arguments or reports.
+The default origin is `http://127.0.0.1:8787`. Pass `--url` for another address. For protected research writes, supply the agent token with `--token-file FILE`. Strategy and performance writes use the strategy token with the same flag. If the CLI is outside your PATH, use `node cli/alphazonai.mjs` in the repository checkout. Run `alphazonai schema COMMAND` for exact flags.
+
+## Configure an instance
+
+Use the service's loopback address or an SSH tunnel. Read `alphazonai settings get` for current values. Submit a JSON object containing the fields to change, using `--file FILE` or `--file -` for stdin. The result includes credential status. Keep input containing credentials private.
+
+| Section | Input |
+| --- | --- |
+| `model` | Use `action: connect` with `key` for OpenAI, or `action: chatgpt-start` and follow the device prompt in `data.model.chatGPT`. Check `settings get` for login status. Use `action: defaults` with `provider`, `model`, `thinking` and `speed` from `models list`. Other actions are `disconnect`, `chatgpt-cancel` and `chatgpt-disconnect`. |
+| `nautilus` | `python` interpreter, `targets` array for local or SSH receivers, `strategyToken` for strategy and performance writes. |
+| `review` | `enabled` for daily reviews, `time` as Shanghai-local `HH:MM`, `language` as `zh-CN` or `en`, and `objective` as review focus. |
+| `data` | `catalog` path, `stateDir` for service state, `host` and `port` for listening, and `agentToken` for research writes. Host, port and state directory take effect at service restart. |
+
+```sh
+printf '%s\n' '{"time":"09:30","language":"en"}' | alphazonai settings set --section review --file -
+```
+
+Supply tokens from a private file or stdin. Omit a token field to keep its value, or set it to `""` to clear it. A settings `--dry-run` lists the submitted field names.
 
 ## Start and verify
 

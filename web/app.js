@@ -1,10 +1,10 @@
 import {packs} from './locale.js';
+import {settingsPage} from './settings.js';
 import {aiReview,reviewPath,reviewRoute} from './reviews.js';
 
 const $=id=>document.getElementById(id);
-const defaultsForm=$('modelDefaultsForm'),keyForm=$('modelKeyForm');
 let lang=Object.hasOwn(packs,localStorage.getItem('alpha.locale'))?localStorage.getItem('alpha.locale'):'en';
-let runs=[],loaded=false,list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings,chatGPTPoll,view,routeVersion=0;
+let runs=[],loaded=false,active,stream,selectedId,candidate,generation,errorCode,view,routeVersion=0;
 let reviewMode='paper',reviewId,reviewList,reviewData,reviewError,reviewRef=[],aiController;
 const targets=new Map();
 const t=k=>packs[lang][k]||packs.en[k]||k;
@@ -26,10 +26,12 @@ async function api(path,body,signal){
   const r=await fetch('/api'+path,init);const payload=await r.json();
   if(!r.ok)throw Error(payload.error||'SERVER_ERROR');return payload;
 }
-async function updateModelSettings(body){
-  const r=await fetch('/api/model-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const payload=await r.json();if(!r.ok)throw Error(payload.error||'SERVER_ERROR');return payload;
+function updateTargets(items){
+  targets.clear();
+  for(const target of items)targets.set(target.id,target.label);
+  if(view==='run')render();
 }
+const settings=settingsPage({t,makeOption,api,updateTargets});
 const runTitle=r=>{
   const dir=r.input?.direction?.trim()||r.direction?.trim();
   return dir?([...dir].length>150?[...dir].slice(0,150).join('')+'…':dir):t(r.preset);
@@ -73,7 +75,7 @@ function drawRuns(){
     a.replaceChildren(node('span',runTitle(r),'rail-title'),node('small',date(r.created)));
     a.append(node('i',undefined,'status-dot '+(/^[-a-z]+$/.test(r.status)?r.status:'')));return a;
   }));
-  for(const [id,mode] of [['overviewLink','overview'],['performanceLink','performance'],['modelSettingsButton','models']]){
+  for(const [id,mode] of [['overviewLink','overview'],['performanceLink','performance'],['settingsLink','settings']]){
     if(view===mode)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');
   }
 }
@@ -116,20 +118,21 @@ function route(){
   const version=++routeVersion;
   const hash=location.hash.slice(1);
   const review=reviewRoute(hash);
+  const settingsRoute=hash.match(/^settings(?:\/(model|nautilus|review|data))?$/);
   reviewRef=review?.parts||[];
   aiController?.abort();
   const id=hash.replace(/^run\//,'');
   const prior=selectedId;
   selectedId=/^[0-9a-f-]{36}$/i.test(id)?id:undefined;
-  view=selectedId?'run':review?'performance':hash==='models'?'models':'overview';
+  view=selectedId?'run':review?'performance':settingsRoute?'settings':'overview';
   stream?.close();stream=undefined;err();
-  $('overview').hidden=view!=='overview';$('detail').hidden=view!=='run';$('modelSettings').hidden=view!=='models';$('performance').hidden=view!=='performance';
+  $('overview').hidden=view!=='overview';$('detail').hidden=view!=='run';$('settings').hidden=view!=='settings';$('performance').hidden=view!=='performance';
   if(prior!==selectedId){active=undefined;candidate=undefined;generation=undefined;}
   drawRuns();
+  if(view==='settings')settings.open(settingsRoute[1]||'model');else settings.close();
   if(view==='run')void open(selectedId,version);
   else if(view==='performance')void openReview(review.mode,review.id,version);
-  else if(view==='models')loadModels(true).catch(e=>err(e.message));
-  else overview();
+  else if(view==='overview')overview();
 }
 
 function svg(tag,attrs={}){
@@ -483,103 +486,16 @@ function render(){
       nextControl.focus({preventScroll:true});
   }
 }
-const modelKey=x=>(x.provider||'openai')+':'+(x.id||x.model);
-function setupModel(target,preferred){
-  const current=list.find(x=>modelKey(x)===target.elements.model.value);
-  const levels=current?.thinking||['off'], speeds=current?.speed||[];
-  const effort=preferred?.thinking??target.elements.thinking.value;
-  const speed=preferred?.speed??target.elements.speed.value;
-  target.elements.thinking.replaceChildren(...levels.map(k=>makeOption(k,k.slice(0,1).toUpperCase()+k.slice(1))));
-  if(levels.includes(effort))target.elements.thinking.value=effort;
-  target.elements.speed.replaceChildren(makeOption('',t('providerDefault')),...speeds.map(k=>makeOption(k,k==='priority'?'Fast':'Standard')));
-  if(speeds.includes(speed))target.elements.speed.value=speed;
-  target.elements.speed.disabled=speeds.length===0;
-}
-function showModels(preferDefaults){
-  const pref=modelSettings?.defaults;
-  for(const target of [defaultsForm]){
-    const old=target.elements.model.value;
-    target.elements.model.replaceChildren(...list.map(x=>makeOption(modelKey(x),(x.name||x.id)+' / '+(x.provider==='openai-codex'?'ChatGPT':'OpenAI API'))));
-    const prefKey=pref?.model?modelKey(pref):'';
-    const id=preferDefaults&&prefKey?prefKey:old||prefKey;
-    if(list.some(m=>modelKey(m)===id))target.elements.model.value=id;
-    setupModel(target,preferDefaults&&prefKey===target.elements.model.value?pref:undefined);
-  }
-  $('modelConnection').textContent=t(modelSettings?.connected?'modelConnected':'modelDisconnected');
-  $('modelSettingsNotice').hidden=Boolean(modelSettings?.writable);
-  keyForm.elements.key.disabled=!modelSettings?.writable;
-  keyForm.querySelector('[type=submit]').disabled=!modelSettings?.writable;
-  $('disconnectModel').disabled=!modelSettings?.writable||!modelSettings?.stored;
-  defaultsForm.querySelector('[type=submit]').disabled=!modelSettings?.writable||!list.length;
-  showChatGPT();
-}
-function showChatGPT(){
-  const local=modelSettings?.writable, connected=modelSettings?.chatGPTConnected, login=modelSettings?.chatGPT;
-  $('chatGPTActions').hidden=!local;
-  const pending=['starting','waiting'].includes(login?.status);
-  $('chatGPTStart').hidden=pending||connected;
-  $('chatGPTCancel').hidden=!pending;
-  $('chatGPTDisconnect').hidden=!connected;
-  $('chatGPTStatus').textContent=connected?t('chatGPTConnected'):login?.status==='failed'?t('chatGPTFailed'):'';
-  const code=login?.status==='waiting'?login.code:'';
-  $('chatGPTDevice').hidden=!code;
-  if(code){$('chatGPTCode').textContent=code;$('chatGPTLink').href=login.url;}
-  else {$('chatGPTCode').textContent='';$('chatGPTLink').removeAttribute('href');}
-  if(pending&&!chatGPTPoll){
-    chatGPTPoll=setTimeout(()=>{chatGPTPoll=undefined;loadModels(false).catch(e=>err(e.message));},2500);
-  }else if(!pending&&chatGPTPoll){clearTimeout(chatGPTPoll);chatGPTPoll=undefined;}
-}
-async function loadModels(preferDefaults){
-  modelSettings=await api('/model-settings');
-  list=modelSettings.models;
-  showModels(preferDefaults);
-}
-async function saveModelSettings(value,formElement){
-  if(formElement.dataset.saving||!modelSettings?.writable)return;
-  formElement.dataset.saving='1';
-  err();
-  try{
-    modelSettings=await updateModelSettings(value);
-    list=modelSettings.models;
-    showModels(true);
-    if(value.action==='defaults')$('modelConnection').textContent=t('modelSaved');
-  }catch(e){err(e.message);}
-  finally{delete formElement.dataset.saving;}
-}
-keyForm.onsubmit=e=>{
-  e.preventDefault();
-  if(keyForm.dataset.saving||!modelSettings?.writable)return;
-  const key=keyForm.elements.key.value;keyForm.elements.key.value='';
-  void saveModelSettings({action:'connect',key},keyForm);
-};
-$('disconnectModel').onclick=()=>saveModelSettings({action:'disconnect'},keyForm);
-$('chatGPTStart').onclick=()=>saveModelSettings({action:'chatgpt-start'},keyForm);
-$('chatGPTCancel').onclick=()=>saveModelSettings({action:'chatgpt-cancel'},keyForm);
-$('chatGPTDisconnect').onclick=()=>saveModelSettings({action:'chatgpt-disconnect'},keyForm);
-$('refreshModels').onclick=()=>loadModels(true).catch(e=>err(e.message));
-defaultsForm.onsubmit=e=>{
-  e.preventDefault();
-  if(!modelSettings?.writable)return;
-  const {model,thinking,speed}=defaultsForm.elements;
-  const selected=list.find(x=>modelKey(x)===model.value);
-  if(!selected)return;
-  void saveModelSettings({action:'defaults',model:selected.id,provider:selected.provider,thinking:thinking.value,speed:speed.value||null},defaultsForm);
-};
-
-defaultsForm.elements.model.onchange=()=>setupModel(defaultsForm);
 function localize(){
   document.documentElement.lang=lang;
   for(const el of document.querySelectorAll('[data-i]'))el.textContent=t(el.dataset.i);
   $('lang').value=lang;
   err(errorCode);drawRuns();
-  if(view==='overview')overview();else if(view==='run')render();else if(view==='performance')renderReview();else if(view==='models'&&modelSettings)showModels(false);
+  if(view==='overview')overview();else if(view==='run')render();else if(view==='performance')renderReview();else if(view==='settings')settings.localize();
 }
 $('lang').onchange=e=>{lang=e.target.value;localStorage.setItem('alpha.locale',lang);localize();};
 document.querySelector('.skip').onclick=e=>{e.preventDefault();$('main').focus();};
 window.addEventListener('hashchange',route);
 localize();route();void refreshRuns();
-void api('/strategy-targets').then(data=>{
-  for(const target of take(data.targets))targets.set(target.id,target.label);
-  if(view==='run')render();
-}).catch(()=>{});
+void api('/strategy-targets').then(data=>updateTargets(take(data.targets))).catch(()=>{});
 setInterval(()=>{if(!document.hidden)void refreshRuns();},25000);
