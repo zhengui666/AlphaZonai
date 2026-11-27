@@ -61,6 +61,44 @@ alphazonai strategies wait --id "$RUN_ID" --strategy "$STRATEGY_ID" --target "$D
 Verify the returned receipt has `status: staged` and `activated: false`.
 Distinguish a failed or unknown outcome from a completed action.
 
+## Paper and live performance
+
+Export a snapshot from an existing Nautilus node as described in
+[performance and trade review](../docs/performance.md). Import it using the
+strategy token and retain the report ID returned by the service.
+
+```sh
+alphazonai performance import --report-file report.json
+alphazonai performance list
+alphazonai performance show --id "$REPORT_ID"
+```
+
+Retry an interrupted import with the same file. Each new capture gets its own
+report ID, so earlier snapshots remain available.
+
+The review list shows the daily schedule status and IDs for automatic and
+manual reviews. Use one of those IDs to read the findings.
+
+```sh
+alphazonai performance review-list
+alphazonai performance review-show --review "$REVIEW_ID"
+```
+
+For a manual review, set a default model in the local dashboard. Use a fresh
+review UUID and optionally add comparison reports and a question. Reuse the review UUID
+and identical inputs if the response is lost.
+
+```sh
+alphazonai performance review --id "$LIVE_REPORT" --with "$PAPER_REPORT" \
+  --review "$REVIEW_ID" --language en \
+  --objective "Did costs explain the difference? Evaluate changing the entry threshold."
+alphazonai performance review-show --review "$REVIEW_ID"
+```
+
+`diagnosing` and `deciding` are in progress. A completed review includes a
+judgment for the strategy, portfolio and parameters. A failed second stage
+preserves the first stage's diagnosis.
+
 ## Design references
 
 The [official Lark CLI](https://github.com/larksuite/cli) informed the

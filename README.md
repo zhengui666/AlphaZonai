@@ -3,10 +3,11 @@
 CogAlpha search and evolution on Pi Durable, with NautilusTrader market data.
 
 - Use the CLI to start, pause, stop and resume research runs.
-- Read charts and reports in the Web dashboard. Only Model Settings are editable there.
+- Read charts and reports in the Web dashboard. The local dashboard also supports Model Settings and starting AI performance reviews.
 - Inspect candidate code, reviews, scores, and ancestry.
 - Export research factors or generate a free-form native Nautilus strategy.
 - Backtest on one configured instance and stage an inactive package on another.
+- Read separate daily AI reviews of paper and live trading at 08:00 Beijing time. Each reviews the previous day's strategy, portfolio and parameters down to native fills. See [performance and trade review](docs/performance.md).
 - English and Simplified Chinese.
 
 ## Run

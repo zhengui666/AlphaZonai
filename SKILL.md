@@ -1,6 +1,6 @@
 ---
 name: alphazonai
-description: Use when asked to run or monitor AlphaZonai factor research, set a research direction, review research evidence, generate and backtest a native Nautilus strategy, or stage a validated strategy at a named deployment target.
+description: Use when asked to run or monitor AlphaZonai factor research, set a research direction, review research evidence, generate and backtest a native Nautilus strategy, stage a strategy, or import and review Nautilus paper and live performance reports.
 compatibility: Requires Node.js 24+ and network access to an authorized AlphaZonai instance. Use the matching repository release's cli/alphazonai.mjs or its installed alphazonai command.
 ---
 
@@ -22,6 +22,10 @@ Use the CLI for external automation. The Web dashboard presents research evidenc
 | Generate and backtest a native strategy | `alphazonai strategies build` |
 | Inspect or export an exact validated strategy | `alphazonai strategies get/wait/export` (choose one verb) |
 | Stage a validated package at an authorized target | `alphazonai strategies push` |
+| Review paper or live execution reports | `alphazonai performance list`, `alphazonai performance show --id REPORT_ID` |
+| Import a report from an existing Nautilus node | `alphazonai performance import --report-file FILE` |
+| Read daily review status and find a review by ID | `alphazonai performance review-list`, then `alphazonai performance review-show --review REVIEW_UUID` |
+| Ask AI to assess strategy, allocation and parameters | `alphazonai performance review --id REPORT_ID --review REVIEW_UUID`, then `alphazonai performance review-show --review REVIEW_UUID` |
 
 Set `ALPHAZONAI_URL` to the instance origin if it is not local. If the CLI is not on your PATH, substitute `node cli/alphazonai.mjs` for `alphazonai` from the repository checkout. Run `alphazonai schema` or `alphazonai schema runs start` for exact flags. If an authorized host supplies tokens, read them from `ALPHA_AGENT_TOKEN` and `ALPHA_STRATEGY_TOKEN`; never put credentials in shell arguments or reports.
 

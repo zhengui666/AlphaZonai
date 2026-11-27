@@ -14,6 +14,7 @@
     <a class="brand" id="brand" href="#overview"><span aria-hidden="true">α</span> AlphaZonai</a>
     <nav id="navigation">
       <a href="#overview" id="overviewLink"><span aria-hidden="true">▤</span><span data-i="overview"></span></a>
+      <a href="#performance/paper" id="performanceLink"><span aria-hidden="true">↗</span><span data-i="performance"></span></a>
       <a href="#models" id="modelSettingsButton"><span aria-hidden="true">⚙</span><span data-i="modelSettings"></span></a>
     </nav>
     <div class="rail-reports"><h2 data-i="reports"></h2><nav id="runs"></nav></div>
@@ -26,6 +27,18 @@
       <div id="overviewContent" aria-busy="true"></div>
     </section>
     <section id="detail" hidden></section>
+    <section id="performance" aria-labelledby="performanceTitle" hidden>
+      <header class="mast"><h1 id="performanceTitle" data-i="performanceTitle"></h1></header>
+      <div class="review-controls">
+        <nav id="reviewModes" class="review-modes" aria-labelledby="performanceTitle">
+          <a href="#performance/paper" data-i="paperTrading"></a>
+          <a href="#performance/live" data-i="liveTrading"></a>
+        </nav>
+        <label id="reviewPicker" hidden><span data-i="tradingSession"></span><select id="reviewSession"></select></label>
+        <button id="reviewRefresh" type="button" data-i="refreshReports"></button>
+      </div>
+      <div id="reviewContent" aria-busy="true"></div>
+    </section>
     <section id="modelSettings" hidden>
 <header class="mast"><div class="eyebrow">AlphaZonai</div><h1 data-i="modelSettings"></h1></header><p id="modelSettingsNotice" data-i="MODEL_SETTINGS_LOCAL" class="problem" hidden></p><div class="settings-grid"><section class="panel settings-card"><h2>ChatGPT</h2>
 <div id="chatGPTActions" class="actions"><button id="chatGPTStart" type="button" data-i="chatGPTStart"></button><button id="chatGPTCancel" type="button" data-i="chatGPTCancel" hidden></button><button id="chatGPTDisconnect" type="button" data-i="chatGPTDisconnect" hidden></button></div>

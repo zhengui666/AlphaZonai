@@ -9,6 +9,8 @@ import {providerSpeed,type ServiceTier} from './model-settings.ts';
 import {isDeepStrictEqual} from 'node:util';
 import {callTarget,planInstructions,validateStrategyPlan} from './strategy.ts';
 import {researchPromptContext} from './research-context.ts';
+import {createPerformanceReview} from './review.ts';
+import {reviewInstructions} from './review-analysis.ts';
 
 export const Runs=defineDoc<any>({kind:'alpha.runs',version:1,scope:'conversation',history:'latest',fork:'initial',initial:()=>({runs:{}}),checkpointWhen:()=>true});
 const Calls=defineDoc<any>({kind:'alpha.calls',version:1,scope:'task',history:'latest',initial:()=>({byKey:{}}),checkpointWhen:()=>true});
@@ -50,9 +52,10 @@ export const nautilus:Driver={
   score:(code,c,s)=>python('score',c,{code,nanLimit:c.rules.nanLimit},s)
 };
 class WorkflowError extends Error {}
-type Ask=(api:any,ctx:any,id:string,prompt:string,sampling?:number)=>Promise<string>;
+export type Ask=(api:any,ctx:any,id:string,prompt:string,sampling?:number)=>Promise<string>;
 const piAsk:Ask=async (api,ctx,id,prompt,sampling)=>{
-  const skill=(await readFile(id==='strategy:plan'?strategySkill:internalSkill,'utf8')).replace(/^---[\s\S]*?---\s*/, '').trim();
+  const skill=id.startsWith('review:')?reviewInstructions:
+    (await readFile(id==='strategy:plan'?strategySkill:internalSkill,'utf8')).replace(/^---[\s\S]*?---\s*/, '').trim();
   let cid;
   const parentRequest=await api.snapshot(Request,api.conversationId,ctx);
   await api.commit(async (tx:any)=>{
@@ -62,7 +65,7 @@ const piAsk:Ask=async (api,ctx,id,prompt,sampling)=>{
     await configure(tx,child.id,{instructions:skill,tools:[],maxTurns:1});
     calls.byKey[id]=child.id;
     const request=await tx.doc(Request,child.id);
-    request.maxTokens=id==='strategy:plan'?16000:4096;
+    request.maxTokens=id==='strategy:plan'||id.startsWith('review:')?16000:4096;
     request.temperature=sampling??null;
     request.speed=parentRequest?.speed??null;
     cid=child.id;
@@ -308,7 +311,8 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
       },ctx);
     }},
   });
-  return {Run,StrategyBuild,StrategyPush,extension:defineExtension({name:'alphazonai',tasks:[Run,Gen,CandidateTask,StrategyBuild,StrategyPush],hooks:[hook(GenerationTask,{beforeProviderRequest:async (request,api,ctx)=>{
+  const PerformanceReview=createPerformanceReview(ask,json);
+  return {Run,StrategyBuild,StrategyPush,PerformanceReview,extension:defineExtension({name:'alphazonai',tasks:[Run,Gen,CandidateTask,StrategyBuild,StrategyPush,PerformanceReview],hooks:[hook(GenerationTask,{beforeProviderRequest:async (request,api,ctx)=>{
     const options=await api.snapshot(Request,api.conversationId,ctx);
     if(!options||!['openai-responses','openai-codex-responses'].includes(request.model.api)||!request.payload||typeof request.payload!=='object')return;
     const payload=providerSpeed({...request.payload,...(request.model.api==='openai-responses'&&options.maxTokens?{max_output_tokens:options.maxTokens}:{})},request.model,options.speed);

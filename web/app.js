@@ -1,9 +1,11 @@
 import {packs} from './locale.js';
+import {aiReview,reviewPath,reviewRoute} from './reviews.js';
 
 const $=id=>document.getElementById(id);
 const defaultsForm=$('modelDefaultsForm'),keyForm=$('modelKeyForm');
 let lang=Object.hasOwn(packs,localStorage.getItem('alpha.locale'))?localStorage.getItem('alpha.locale'):'en';
 let runs=[],loaded=false,list=[],active,stream,selectedId,candidate,generation,errorCode,modelSettings,chatGPTPoll,view,routeVersion=0;
+let reviewMode='paper',reviewId,reviewList,reviewData,reviewError,reviewRef=[],aiController;
 const targets=new Map();
 const t=k=>packs[lang][k]||packs.en[k]||k;
 const node=(name,text,cls)=>{const el=document.createElement(name);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;};
@@ -19,8 +21,9 @@ const state=(s,style=s)=>node('span',t(s||'empty'),'state '+(/^[-a-z_]+$/.test(s
 const link=(text,url,cls)=>{const el=node('a',text,cls);el.href=url;return el;};
 function lookup(k){return t('metric_'+k)==='metric_'+k?k.replaceAll('_',' '):t('metric_'+k);}
 function err(code){errorCode=code;$('error').hidden=!code;$('error').textContent=code?t(code):'';}
-async function api(path){
-  const r=await fetch('/api'+path);const payload=await r.json();
+async function api(path,body,signal){
+  const init=body===undefined?{signal}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal};
+  const r=await fetch('/api'+path,init);const payload=await r.json();
   if(!r.ok)throw Error(payload.error||'SERVER_ERROR');return payload;
 }
 async function updateModelSettings(body){
@@ -70,7 +73,7 @@ function drawRuns(){
     a.replaceChildren(node('span',runTitle(r),'rail-title'),node('small',date(r.created)));
     a.append(node('i',undefined,'status-dot '+(/^[-a-z]+$/.test(r.status)?r.status:'')));return a;
   }));
-  for(const [id,mode] of [['overviewLink','overview'],['modelSettingsButton','models']]){
+  for(const [id,mode] of [['overviewLink','overview'],['performanceLink','performance'],['modelSettingsButton','models']]){
     if(view===mode)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');
   }
 }
@@ -112,15 +115,19 @@ async function open(id,version){
 function route(){
   const version=++routeVersion;
   const hash=location.hash.slice(1);
+  const review=reviewRoute(hash);
+  reviewRef=review?.parts||[];
+  aiController?.abort();
   const id=hash.replace(/^run\//,'');
   const prior=selectedId;
   selectedId=/^[0-9a-f-]{36}$/i.test(id)?id:undefined;
-  view=selectedId?'run':hash==='models'?'models':'overview';
+  view=selectedId?'run':review?'performance':hash==='models'?'models':'overview';
   stream?.close();stream=undefined;err();
-  $('overview').hidden=view!=='overview';$('detail').hidden=view!=='run';$('modelSettings').hidden=view!=='models';
+  $('overview').hidden=view!=='overview';$('detail').hidden=view!=='run';$('modelSettings').hidden=view!=='models';$('performance').hidden=view!=='performance';
   if(prior!==selectedId){active=undefined;candidate=undefined;generation=undefined;}
   drawRuns();
   if(view==='run')void open(selectedId,version);
+  else if(view==='performance')void openReview(review.mode,review.id,version);
   else if(view==='models')loadModels(true).catch(e=>err(e.message));
   else overview();
 }
@@ -129,6 +136,164 @@ function svg(tag,attrs={}){
   const el=document.createElementNS('http://www.w3.org/2000/svg',tag);
   for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);
   return el;
+}
+const utc=value=>value?new Date(value).toISOString().slice(0,19).replace('T',' ')+(value.match(/T\d\d:\d\d:\d\d(\.\d+)/i)?.[1]||''):'—';
+async function openReview(mode,id,version){
+  reviewMode=mode;reviewId=id;reviewList=reviewData=reviewError=undefined;
+  renderReview();
+  try{
+    const {reports}=await api('/performance');
+    if(version!==routeVersion)return;
+    reviewList=reports;
+    reviewId=id||reports.find(r=>r.mode===mode)?.id;
+    if(reviewId&&!reports.some(r=>r.mode===mode&&r.id===reviewId))throw Error('NOT_FOUND');
+    renderReview();
+    if(reviewId){
+      const report=await api('/performance/'+encodeURIComponent(reviewId));
+      if(version!==routeVersion)return;
+      reviewData=report;renderReview();
+    }
+  }catch(e){if(version===routeVersion){reviewError=e.message;renderReview();}}
+}
+function renderReview(){
+  aiController?.abort();
+  for(const a of $('reviewModes').querySelectorAll('a')){
+    if(a.hash===reviewPath(reviewMode))a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');
+  }
+  const select=$('reviewSession'),content=$('reviewContent');
+  const choices=(reviewList||[]).filter(r=>r.mode===reviewMode);
+  $('reviewPicker').hidden=!choices.length;
+  select.replaceChildren(...choices.map(r=>makeOption(r.id,[r.strategyId,r.accountId,utc(r.asOf)+' UTC'].join(' · '))));
+  select.value=reviewId||'';
+  content.setAttribute('aria-busy',String(!reviewError&&!reviewData&&(!reviewList||!!reviewId)));
+  if(reviewError){content.replaceChildren(blank(t(reviewError)));return;}
+  if(!reviewList||reviewId&&!reviewData){content.replaceChildren(blank(t('loading')));return;}
+  aiController=new AbortController();
+  const ai=aiReview(reviewMode,reviewData,reviewList,{lang,t,node,link,detailPanel,properties,makeOption,api,utc},aiController.signal);
+  if(!reviewData){
+    const box=blank(t(reviewMode==='live'?'noLiveReports':'noPaperReports'));
+    box.append(node('p',t('importSnapshot'),'subtle'),node('code','alphazonai performance import --report-file report.json'));
+    content.replaceChildren(ai,box);return;
+  }
+  const r=reviewData;
+  const metadata=properties([[t('tradingStrategy'),r.strategyId],[t('account'),r.accountId],
+    ...(r.coverageStart?[[t('snapshotStart'),utc(r.coverageStart)]]:[]),[t('snapshotTime'),utc(r.asOf)],[t('nodeSession'),r.sessionId]]);
+  const ref=reviewRef;
+  const instrument=ref[0]==='instrument'?ref[1]:null;
+  const positions=instrument?r.positions.filter(p=>p.instrument===instrument):r.positions;
+  const fills=instrument?r.fills.filter(f=>f.instrument===instrument):r.fills;
+  const fillBox=node('div',undefined,'review-fills');
+  function showFills(position){
+    const tradeIds=new Set(position?.tradeIds);
+    const rows=position?fills.filter(f=>f.instrument===position.instrument&&tradeIds.has(f.tradeId)):fills;
+    fillBox.replaceChildren();
+    if(position){
+      const filter=node('div',undefined,'section-heading');
+      const clear=node('button',t('allFills'));clear.type='button';
+      clear.onclick=()=>{showFills();fillBox.focus();};
+      filter.append(node('span',t('positionId')+' · '+position.id),clear);fillBox.append(filter);
+    }
+    fillBox.append(reviewLedger(
+      ['fillTime','instrument','tradeSide','fillQuantity','fillPrice','currency','commission','liquidity','orderId','tradeId','positionId'],
+      rows,f=>[utc(f.time),f.instrument,t(f.side),f.quantity,f.price,f.currency,f.commission,t(f.liquidity||'—'),f.orderId,f.tradeId,f.positionId],
+      'noFills',ref[0]==='fill'?rows.findIndex(f=>f.instrument===ref[1]&&f.orderId===ref[2]&&f.tradeId===ref[3]):-1));
+  }
+  fillBox.tabIndex=-1;showFills();
+  const positionRows=reviewLedger(
+    ['positionId','instrument','positionSide','openedTime','closedTime','openQuantity','peakQuantity','positionPnl'],
+    positions,p=>{
+      let id=p.id;
+      if(p.tradeIds?.length){
+        const b=node('button',id,'record');b.type='button';b.setAttribute('aria-label',t('fillsForPosition')+' '+id);
+        b.onclick=()=>{showFills(p);fillBox.focus();};id=b;
+      }
+      return [id,p.instrument,t(p.side),utc(p.opened),p.closed?utc(p.closed):t('openPosition'),p.quantity,p.peakQuantity,p.realizedPnl];
+    },'noPositions',ref[0]==='position'?positions.findIndex(p=>p.id===ref[1]&&p.opened===ref[2]):-1);
+  const metrics=currencyReview(r.currencies,ref[1]),params=Object.entries(r.parameters||{});
+  const positionPanel=panel(t('positionReview'),positionRows);
+  if(instrument){
+    const header=node('div',undefined,'section-heading');
+    header.append(node('h2',t('positionReview')+' · '+instrument),link(t('showAllInstruments'),reviewPath(reviewMode,r.id),'button'));
+    positionPanel.firstChild.replaceWith(header);
+  }
+  content.replaceChildren(ai,metadata,metrics,
+    positionPanel,panel(t('executionReview')+(instrument?' · '+instrument:''),fillBox),
+    panel(t('accountBalances'),r.balances.length?table([t('currency'),t('totalBalance'),t('freeBalance'),t('lockedBalance')],r.balances.map(b=>[b.currency,b.total,b.free,b.locked])):node('p',t('noBalances'),'subtle')));
+  if(params.length){
+    const values=properties(params.map(([k,v])=>[k,String(v)]));
+    const idx=params.findIndex(([k])=>k===ref[1]);
+    if(ref[0]==='parameter'&&idx>=0)values.children[idx].classList.add('ref-property');
+    content.append(detailPanel(t('strategyParameters'),values));
+  }
+  const target=ref[0]==='position'||ref[0]==='fill'?content.querySelector('.ref-row'):
+    ['currency','window','fees'].includes(ref[0])?metrics:instrument?positionPanel:ref[0]==='parameter'&&params.length?content.lastChild:null;
+  if(target){if(target.tagName==='DETAILS')target.open=true;target.scrollIntoView({block:'center'});}
+}
+$('reviewRefresh').onclick=route;
+$('reviewSession').onchange=e=>{location.hash=reviewPath(reviewMode,e.target.value);};
+
+// Native timelines are chronological. Page newest-first without reversing the source.
+function reviewLedger(keys,entries,cells,empty,selected=-1){
+  if(!entries.length)return node('p',t(empty),'subtle');
+  const wrapper=node('div',undefined,'review-ledger'),grid=node('div'),pager=node('div',undefined,'review-pages');
+  const prev=node('button',t('newerRows')),next=node('button',t('olderRows')),range=node('span');
+  range.setAttribute('role','status');prev.type=next.type='button';
+  const size=25;
+  let offset=selected<0?0:Math.floor((entries.length-selected-1)/size)*size;
+  function draw(){
+    const end=entries.length-offset,start=Math.max(0,end-size);
+    grid.replaceChildren(table(keys.map(t),entries.slice(start,end).reverse().map(cells)));
+    if(selected>=start&&selected<end)grid.querySelector('tbody').rows[end-selected-1].classList.add('ref-row');
+    range.textContent=number(offset+1)+'–'+number(entries.length-start)+' / '+number(entries.length);
+    prev.disabled=offset===0;next.disabled=start===0;
+  }
+  prev.onclick=()=>{offset-=size;draw();};next.onclick=()=>{offset+=size;draw();};
+  pager.append(range,prev,next);wrapper.append(grid);if(entries.length>size)wrapper.append(pager);
+  draw();return wrapper;
+}
+function currencyReview(currencies,currency){
+  const body=node('div',undefined,'currency-review');
+  const heading=node('div',undefined,'section-heading');
+  const box=node('section',undefined,'panel');box.append(heading,body);
+  heading.append(node('h2',t('closedPerformance')));
+  if(!currencies.length){body.append(node('p',t('noCurrencyReport'),'subtle'));return box;}
+  const selector=node('select');selector.setAttribute('aria-label',t('currency'));
+  selector.append(...currencies.map(c=>makeOption(c.currency,c.currency)));heading.append(selector);
+  if(currencies.some(c=>c.currency===currency))selector.value=currency;
+  function draw(){
+    const c=currencies[selector.selectedIndex],stats=node('div',undefined,'stat-grid review-stats');
+    const win=c.winRate==null?'—':new Intl.NumberFormat(lang,{style:'percent',maximumFractionDigits:2}).format(c.winRate);
+    stats.append(stat(t('realizedNetPnl'),number(c.realizedPnl),c.currency),stat(t('realizedDrawdown'),number(c.maxDrawdown),c.currency),
+      stat(t('closedCount'),number(c.closedCount)),stat(t('winRate'),win),stat(t('profitFactor'),number(c.profitFactor,2)),stat(t('fillFees'),number(c.fees),c.currency));
+    body.replaceChildren(stats);
+    if(c.curve.length)body.append(pnlChart(c));else body.append(node('p',t('noClosedHistory'),'subtle'));
+  }
+  selector.onchange=draw;draw();return box;
+}
+function pnlChart(c){
+  const fig=node('figure',undefined,'wide-chart pnl-chart');
+  fig.append(node('figcaption',t('closedCurve')+' · '+c.currency));
+  const graph=svg('svg',{viewBox:'0 0 760 215',role:'img','aria-label':t('closedCurve')+' · '+c.currency});
+  const nanos=time=>BigInt(Date.parse(time))*1000000n+BigInt((time.match(/T\d\d:\d\d:\d\d\.(\d+)/i)?.[1]||'').padEnd(9,'0').slice(3,9));
+  const points=c.curve,first=nanos(points[0].time),last=nanos(points.at(-1).time);
+  let low=0,high=0;
+  for(const p of points){low=Math.min(low,Number(p.pnl));high=Math.max(high,Number(p.pnl));}
+  const x=time=>first===last?415:90+Number(nanos(time)-first)/Number(last-first)*650;
+  const y=pnl=>high===low?103:18+(high-Number(pnl))/(high-low)*148;
+  const tick=new Intl.NumberFormat(lang,{maximumSignificantDigits:4});
+  for(const v of new Set([high,0,low])){
+    graph.append(svg('line',{x1:90,y1:y(v),x2:740,y2:y(v),class:'grid-line'}),svgText(82,y(v)+4,tick.format(v),'axis','end'));
+  }
+  const path=['M',x(points[0].time),y(0)];
+  for(const p of points)path.push('H',x(p.time),'V',y(p.pnl));
+  graph.append(svg('path',{d:path.join(' '),class:'pnl-line'}));
+  const final=points.at(-1);
+  graph.append(marker(svg('circle',{cx:x(final.time),cy:y(final.pnl),r:4,class:'pnl-dot'}),utc(final.time)+' UTC · '+final.pnl+' '+c.currency));
+  const timeLabel=p=>(last-first<1000000000n?utc(p.time):utc(p.time).slice(0,19))+' UTC';
+  if(first===last)graph.append(svgText(x(final.time),199,timeLabel(final),'axis'));
+  else graph.append(svgText(90,199,timeLabel(points[0]),'axis','start'),svgText(740,199,timeLabel(final),'axis','end'));
+  fig.append(graph,detailPanel(t('chartData'),reviewLedger(['closedTime','cumulativePnl'],points,p=>[utc(p.time),p.pnl+' '+c.currency],'noClosedHistory')));
+  return fig;
 }
 function svgText(x,y,text,cls,anchor='middle'){
   const el=svg('text',{x,y,class:cls,'text-anchor':anchor});el.textContent=text;return el;
@@ -407,7 +572,7 @@ function localize(){
   for(const el of document.querySelectorAll('[data-i]'))el.textContent=t(el.dataset.i);
   $('lang').value=lang;
   err(errorCode);drawRuns();
-  if(view==='overview')overview();else if(view==='run')render();else if(view==='models'&&modelSettings)showModels(false);
+  if(view==='overview')overview();else if(view==='run')render();else if(view==='performance')renderReview();else if(view==='models'&&modelSettings)showModels(false);
 }
 $('lang').onchange=e=>{lang=e.target.value;localStorage.setItem('alpha.locale',lang);localize();};
 document.querySelector('.skip').onclick=e=>{e.preventDefault();$('main').focus();};

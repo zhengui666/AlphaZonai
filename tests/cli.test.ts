@@ -106,6 +106,66 @@ test('CLI reports uncertain writes without automatically resending',async()=>{
   });
 });
 
+test('CLI imports the original performance report and reads its list and detail',async()=>{
+  const report={id:run,mode:'paper',fills:[]};
+  await fixture(async(req,res)=>{
+    if(req.method==='POST'){
+      assert.equal(req.url,'/api/performance');
+      assert.equal(req.headers.authorization,'Bearer report-token');
+      let body='';for await(const chunk of req)body+=chunk;
+      assert.deepEqual(JSON.parse(body),report);
+      return json(res,201,{id:run});
+    }
+    assert.equal(req.headers.authorization,undefined);
+    if(req.url==='/api/performance')return json(res,200,{reports:[{id:run}]});
+    assert.equal(req.url,'/api/performance/'+run);
+    json(res,200,report);
+  },async origin=>{
+    const env={ALPHAZONAI_URL:origin,ALPHA_STRATEGY_TOKEN:'report-token'};
+    const imported=await invoke(['performance','import','--report-file','-'],env,JSON.stringify(report));
+    assert.equal(imported.code,0);assert.deepEqual(JSON.parse(imported.out).data,{id:run});
+    const list=await invoke(['performance','list'],env);
+    assert.deepEqual(JSON.parse(list.out).data.reports,[{id:run}]);
+    const detail=await invoke(['performance','show','--id',run],env);
+    assert.deepEqual(JSON.parse(detail.out).data,report);
+    const invalid=await invoke(['performance','import','--report-file','-'],env,'{broken');
+    assert.equal(invalid.code,2);assert.equal(JSON.parse(invalid.err).error.code,'USAGE');
+  });
+});
+
+test('CLI requests an AI review and shows its persisted result',async()=>{
+  const review='30000000-0000-4000-8000-000000000003';
+  const history={reviews:[{id:review,trigger:'daily'}],daily:{lastDate:'2026-11-26'}};
+  const objective='Compare trading costs at portfolio weights of 40% and 60%.';
+  const selection=['performance','review','--id',run,'--review',review];
+  const preview=await invoke([...selection,'--dry-run']);
+  assert.deepEqual(JSON.parse(preview.out).data.body,{id:review,reportIds:[run]});
+  const invalid=await invoke([...selection,'--with','invalid','--dry-run']);
+  assert.equal(invalid.code,2);
+  await fixture(async(req,res)=>{
+    if(req.method==='POST'){
+      assert.equal(req.url,'/api/performance/reviews');
+      assert.equal(req.headers.authorization,'Bearer review-token');
+      let body='';for await(const chunk of req)body+=chunk;
+      assert.deepEqual(JSON.parse(body),{id:review,reportIds:[run,strategy],objective,language:'en'});
+      return json(res,202,{id:review});
+    }
+    assert.equal(req.headers.authorization,undefined);
+    if(req.url==='/api/performance/reviews')return json(res,200,history);
+    assert.equal(req.url,'/api/performance/reviews/'+review);
+    json(res,200,{id:review,status:'completed'});
+  },async origin=>{
+    const env={ALPHAZONAI_URL:origin,ALPHA_STRATEGY_TOKEN:'review-token'};
+    const requested=await invoke([...selection,'--with',strategy,'--objective',objective,'--language','en'],env);
+    assert.equal(requested.code,0);
+    assert.deepEqual(JSON.parse(requested.out).meta.reconcile,{command:'performance review-show',review});
+    const listed=await invoke(['performance','review-list'],env);
+    assert.deepEqual(JSON.parse(listed.out).data,history);
+    const result=await invoke(['performance','review-show','--review',review],env);
+    assert.deepEqual(JSON.parse(result.out).data,{id:review,status:'completed'});
+  });
+});
+
 test('CLI export creates a raw artifact and never overwrites an existing file',async()=>{
   const directory=await mkdtemp(join(tmpdir(),'alpha-cli-test-'));
   try{

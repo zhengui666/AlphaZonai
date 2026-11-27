@@ -9,6 +9,8 @@ const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const arg=(type,description,required=false)=>({type,description,required});
 const id=arg('uuid','Existing research run UUID.',true);
 const strategy=arg('uuid','Strategy UUID. Generate once with id and reuse.',true);
+const reportId=arg('uuid','Performance report UUID.',true);
+const review=arg('uuid','AI review UUID. Generate once with id and reuse.',true);
 const target=arg('string','Exact configured target ID.',true);
 const start=arg('date','UTC start date, inclusive (YYYY-MM-DD).',true);
 const end=arg('date','UTC end date, exclusive (YYYY-MM-DD).',true);
@@ -39,6 +41,15 @@ const commands={
   'strategies wait':{description:'Poll a strategy build, or the deployment receipt for --target.',method:'GET',path:'/api/runs/:id',options:{id,strategy,target:{...target,required:false},...waiting}},
   'strategies export':{description:'Export a validated strategy package.',method:'GET',path:'/api/runs/:id/strategies?download=:strategy',options:{id,strategy,output}},
   'strategies push':{description:'Stage an inactive strategy package at the exact deployment target; never activates trading.',method:'POST',path:'/api/runs/:id/strategies',auth:'ALPHA_STRATEGY_TOKEN',options:{id,strategy,target}},
+  'performance import':{description:'Import a Nautilus paper or live performance report.',method:'POST',path:'/api/performance',auth:'ALPHA_STRATEGY_TOKEN',options:{'report-file':{...file,required:true}}},
+  'performance list':{description:'List imported performance reports.',method:'GET',path:'/api/performance',options:{}},
+  'performance show':{description:'Read a performance report and its trades.',method:'GET',path:'/api/performance/:id',options:{id:reportId}},
+  'performance review':{description:'Request an AI review of up to eight distinct paper or live reports.',method:'POST',path:'/api/performance/reviews',auth:'ALPHA_STRATEGY_TOKEN',options:{
+    id:reportId,with:arg('string','Additional report UUIDs, separated by commas.'),review,
+    objective:arg('string','Review focus, current parameters, portfolio weights or constraints.'),language:arg('string','Review language: zh-CN (default) or en.'),
+  }},
+  'performance review-list':{description:'List AI performance review IDs and the daily schedule status.',method:'GET',path:'/api/performance/reviews',options:{}},
+  'performance review-show':{description:'Read the status and findings of an AI performance review.',method:'GET',path:'/api/performance/reviews/:review',options:{review}},
 };
 const globalOptions={
   url:arg('url','Service origin (default: ALPHAZONAI_URL or loopback).'),
@@ -127,7 +138,7 @@ async function readText(raw,k){
 }
 async function requestPlan(name,spec,raw){
   const url=baseUrl(raw);
-  const path=spec.path.replace(/:(id|strategy)/g,(_,key)=>encodeURIComponent(raw[key]));
+  const path=spec.path.replace(/:(id|strategy|review)/g,(_,key)=>encodeURIComponent(raw[key]));
   let body;
   if(name==='runs start'){
     if(raw.provider&&!raw.model)throw usage('--provider requires --model.');
@@ -145,14 +156,25 @@ async function requestPlan(name,spec,raw){
     body={action:'build',id:raw.strategy,target:raw.target,start:raw.start,end:raw.end,...(brief!==undefined?{brief}:{})};
   }else if(name==='strategies push'){
     body={action:'push',id:raw.strategy,target:raw.target};
+  }else if(name==='performance import'){
+    const contents=await readText(raw,'report');
+    try{body=JSON.parse(contents);}catch{throw usage('--report-file must contain valid JSON.');}
+  }else if(name==='performance review'){
+    const others=raw.with?raw.with.split(',').map(value=>value.trim()):[];
+    if(others.some(value=>!uuid.test(value)))throw usage('--with must contain comma-separated report UUIDs.');
+    if(raw.language&&!['zh-CN','en'].includes(raw.language))throw usage('--language must be zh-CN or en.');
+    body={id:raw.review,reportIds:[raw.id,...others]};
+    for(const key of ['objective','language'])if(raw[key]!==undefined)body[key]=raw[key];
   }else if(spec.method==='POST'){
     body={action:name.split(' ')[1]};
   }
   return {method:spec.method,url:url+path,body,auth:spec.auth,timeout:raw['timeout-ms']??defaults.timeout};
 }
-function recovery(name,raw){
+function recovery(name,raw,body){
   if(name.startsWith('runs ')&&name!=='runs list')return {command:'runs get',id:raw.id};
   if(name.startsWith('strategies ')&&raw.strategy)return {command:'strategies get',id:raw.id,strategy:raw.strategy,...(raw.target&&name!=='strategies build'?{target:raw.target}:{})};
+  if(name==='performance import'&&uuid.test(body?.id))return {command:'performance show',id:body.id};
+  if(name==='performance review')return {command:'performance review-show',review:raw.review};
 }
 async function request(req,name,raw){
   const headers={Accept:'application/json'};
@@ -160,7 +182,7 @@ async function request(req,name,raw){
   const token=req.auth&&process.env[req.auth];
   if(token)headers.Authorization='Bearer '+token;
   const write=req.method==='POST';
-  const state=write?{outcome:'unknown',reconcile:recovery(name,raw)}:{};
+  const state=write?{outcome:'unknown',reconcile:recovery(name,raw,req.body)}:{};
   let response;
   try{
     response=await fetch(req.url,{method:req.method,headers,body:req.body===undefined?undefined:JSON.stringify(req.body),

@@ -2,8 +2,9 @@
 
 AlphaZonai separates the human report surface from the external-agent control
 surface. The Web dashboard reads research, coverage, candidate evidence, strategy
-validation, and deployment receipts. Only model settings can be written from
-the Web app. An agent uses the CLI to initiate or manage work and to obtain
+validation, deployment receipts and execution reports. A local browser can
+configure its model and request an AI review of imported reports. An agent
+uses the CLI to initiate or manage work and to obtain
 machine-readable results. Neither surface owns an execution engine: Pi Durable
 owns the task lifecycle, and NautilusTrader owns Catalog reads and backtests.
 
