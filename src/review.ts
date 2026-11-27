@@ -2,15 +2,16 @@ import {defineDoc,defineDocFamily,defineTask} from '@earendil-works/pi-durable';
 import {arr,compile,equal,obj,oneOf,opt,str} from '@earendil-works/pi-schema';
 import {PerformanceReport} from './performance.ts';
 import {strategyId} from './strategy.ts';
+import {defaultReview,type ReviewSettings} from './settings.ts';
 import type {Ask} from './extension.ts';
 import {reviewContext,diagnosisPrompt,decisionPrompt,validateDiagnosis,validateDecisions,type ReviewContext} from './review-analysis.ts';
 
 const uuid=str({pattern:strategyId.source});
 const request=compile(obj({id:uuid,reportIds:arr(uuid,{minItems:1,maxItems:8,uniqueItems:true}),
   objective:opt(str({maxLength:2000})),language:opt(oneOf(['zh-CN','en']))}));
-export function reviewRequest(raw:unknown){
+export function reviewRequest(raw:unknown,defaults:Pick<ReviewSettings,'language'|'objective'>=defaultReview){
   if(!request.check(raw))throw Error('BAD_REQUEST');
-  return {id:raw.id,reportIds:raw.reportIds,objective:(raw.objective??'').trim(),language:raw.language??'zh-CN'};
+  return {id:raw.id,reportIds:raw.reportIds,objective:(raw.objective??defaults.objective).trim(),language:raw.language??defaults.language};
 }
 export function sameReviewRequest(prior:ReturnType<typeof reviewRequest>,input:ReturnType<typeof reviewRequest>){
   return prior.objective===input.objective&&prior.language===input.language&&equal(prior.reportIds,input.reportIds);

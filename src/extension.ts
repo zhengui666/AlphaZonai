@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {metrics, modes, roles, rng, select, shuffle, type Candidate, paper} from './method.ts';
 import {providerSpeed,type ServiceTier} from './model-settings.ts';
 import {isDeepStrictEqual} from 'node:util';
-import {callTarget,planInstructions,validateStrategyPlan} from './strategy.ts';
+import {callTarget,planInstructions,validateStrategyPlan,type ReceiverSettings} from './strategy.ts';
 import {researchPromptContext} from './research-context.ts';
 import {createPerformanceReview} from './review.ts';
 import {reviewInstructions} from './review-analysis.ts';
@@ -33,9 +33,11 @@ export type Driver = {
 const internalSkill=new URL('../skills/cogalpha/SKILL.md', import.meta.url);
 const strategySkill=new URL('../skills/strategy/SKILL.md',import.meta.url);
 const bridge=fileURLToPath(new URL('../quant/bridge.py',import.meta.url));
-function python(phase:string,config:any,body:any,signal:AbortSignal) {
+type Workers={stateDir:string;nautilusSettings:()=>Promise<ReceiverSettings>};
+async function python(workers:Workers,phase:string,id:string,body:unknown,signal:AbortSignal) {
+  const {python:executable}=await workers.nautilusSettings();
   return new Promise<any>((resolve,reject)=>{
-    const proc=spawn(process.env.ALPHA_PYTHON||'python3',[bridge,phase,join(process.env.ALPHA_STATE||'state',config.id)],{
+    const proc=spawn(executable,[bridge,phase,join(workers.stateDir,id)],{
       signal,env:{PATH:process.env.PATH,LANG:'C.UTF-8',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1'},stdio:['pipe','pipe','pipe']});
     let out='', err='';
     proc.stdout.on('data',d=>{out+=d;});
@@ -46,11 +48,13 @@ function python(phase:string,config:any,body:any,signal:AbortSignal) {
     proc.stdin.end(JSON.stringify(body));
   });
 }
-export const nautilus:Driver={
-  keys:metrics,contract:'Return a complete Python function factor(df) -> pandas Series aligned to the input MultiIndex (ts, instrument). ts is UTC availability in integer nanoseconds. Only open, high, low, close and volume exist. Use only current and prior rows. Respect time gaps; do not hardcode instruments or use BTC movement as a market-wide signal. No network or file I/O. Do not implement orders or use future returns in factor().',
-  prepare:(c,s)=>python('prepare',c,c,s),
-  score:(code,c,s)=>python('score',c,{code,nanLimit:c.rules.nanLimit},s)
-};
+function nautilusDriver(workers:Workers):Driver {
+  return {
+    keys:metrics,contract:'Return a complete Python function factor(df) -> pandas Series aligned to the input MultiIndex (ts, instrument). ts is UTC availability in integer nanoseconds. Only open, high, low, close and volume exist. Use only current and prior rows. Respect time gaps; do not hardcode instruments or use BTC movement as a market-wide signal. No network or file I/O. Do not implement orders or use future returns in factor().',
+    prepare:(c,s)=>python(workers,'prepare',c.id,c,s),
+    score:(code,c,s)=>python(workers,'score',c.id,{code,nanLimit:c.rules.nanLimit},s)
+  };
+}
 class WorkflowError extends Error {}
 export type Ask=(api:any,ctx:any,id:string,prompt:string,sampling?:number)=>Promise<string>;
 const piAsk:Ask=async (api,ctx,id,prompt,sampling)=>{
@@ -100,7 +104,7 @@ function generationPlan(c:any,g:number,parents:Candidate[],feedback:any) {
     return {id:`${g}.${i}`,sampling:(7+Math.floor(random()*6))/10,role:active[i%active.length],mode:modes[Math.floor(random()*modes.length)],operation,ancestors,feedback,config:c};
   });
 }
-export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
+export function createCogAlpha(workers:Workers,driver:Driver=nautilusDriver(workers),ask:Ask=piAsk){
   const CandidateTask=defineTask<any,any,any>({
     name:'alphazonai.candidate',version:1,initial:()=>({phase:'evaluate'}),
     phases:{evaluate:async (task,api,ctx)=>{
@@ -280,7 +284,7 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
         const input=task.input, plan=task.state.checkpoint.plan;
         let receipt:any, problem:string|undefined;
         try{
-          receipt=await callTarget(input.target,'backtest',
+          receipt=await callTarget(await workers.nautilusSettings(),input.target,'backtest',
             {id:input.id,plan,start:input.start,end:input.end,research_end:input.researchEnd},api.signal);
           const module='alpha_strategy_'+input.id.replaceAll('-','');
           if(receipt.source!==plan.source||receipt.strategy.strategy_path!==module+':'+plan.strategyClass||
@@ -302,7 +306,7 @@ export function createCogAlpha(driver:Driver=nautilus,ask:Ask=piAsk){
     phases:{stage:async(task,api,ctx)=>{
       const input=task.input;
       let receipt:any,problem:string|undefined;
-      try{receipt=await callTarget(input.target,'stage',{id:input.id,bundle:input.bundle},api.signal);}
+      try{receipt=await callTarget(await workers.nautilusSettings(),input.target,'stage',{id:input.id,bundle:input.bundle},api.signal);}
       catch(e:any){if(api.signal.aborted)throw e;problem=e.message;}
       return api.commit(async tx=>{
         const op=(await tx.doc(Runs,input.docId)).runs[input.runId].strategies[input.id].deployments[input.target];

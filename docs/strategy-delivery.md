@@ -40,17 +40,20 @@ source and holdout evidence to understand what was actually tested.
 
 ## Profiles and entry points
 
-Set `ALPHA_STRATEGY_TARGETS` to a mounted target registry and
-`ALPHA_STRATEGY_TOKEN` to a suitable secret for strategy operations. Run on a
-private interface, SSH forward, or authenticated TLS proxy. The web app is
-not intended for unauthenticated public exposure. Target IDs and capabilities
-are operator configured; an external agent does not supply arbitrary hostnames.
+Use **Settings → NautilusTrader settings** to save the strategy token and
+targets. Supply the same token to authorized CLI commands with
+`--token-file FILE`. Run on a private interface, SSH forward, or authenticated
+TLS proxy. Each target specifies its allowed operations and the receiver on
+which they run. To apply the following object from a file, use
+`alphazonai settings set --section nautilus --file targets.json`.
 
 ```json
-[
-  {"id":"history","label":"Historical runner","kind":"local","roles":["backtest"],"profile":"/etc/alpha/history.json"},
-  {"id":"runtime","label":"Remote strategy host","kind":"ssh","roles":["deploy"],"alias":"alpha-runtime","sshConfig":"/etc/alpha/ssh/config"}
-]
+{
+  "targets": [
+    {"id":"history","label":"Historical runner","kind":"local","roles":["backtest"],"profile":"/etc/alpha/history.json"},
+    {"id":"runtime","label":"Remote strategy host","kind":"ssh","roles":["deploy"],"alias":"alpha-runtime","sshConfig":"/etc/alpha/ssh/config"}
+  ]
+}
 ```
 
 A target can have both roles. An optional `marketContext` string on the
@@ -68,8 +71,8 @@ port forwarding, for example:
 Install `quant/strategy_receiver.py` and `quant/strategy_backtest.py` from the
 same AlphaZonai release. Use NautilusTrader 1.231.0 in the receiver interpreter.
 The Python environment should contain only runtime libraries, never secrets.
-A local profile uses `ALPHA_PYTHON`, read-only Catalog access, and the same
-receiver. A remote backtest additionally needs Bubblewrap and a host policy
+A local target uses the Python interpreter set in **NautilusTrader settings**,
+read-only Catalog access and the same receiver. A remote backtest additionally needs Bubblewrap and a host policy
 that allows the runtime to open isolated user/PID/network namespaces.
 A stage-only target needs no Bubblewrap, Catalog, or market/exchange keys.
 Capabilities are checked on both the sender and the receiver.

@@ -36,6 +36,8 @@ handoff, not a Nautilus strategy ready to trade without integration.
 | Method and path | Payload / result |
 |---|---|
 | GET `/api/models` | Pi provider catalog and supported reasoning levels |
+| GET `/api/settings` | Current settings and credential connection status for the local dashboard and CLI |
+| POST `/api/settings/:section` | Apply a model action or update fields in the `nautilus`, `review` or `data` section |
 | POST `/api/runs` | `id` (UUID request key), `preset` (minute or paper), `model`, `thinking`, `start`, `end`, `horizon`, `seed`; minute preset also accepts `parallel`, `generations`, `plateauWindow` |
 | GET `/api/runs` | Run summaries |
 | GET `/api/runs/:id` | Current snapshot with already settled generations |

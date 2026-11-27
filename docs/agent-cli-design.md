@@ -2,10 +2,10 @@
 
 AlphaZonai separates the human report surface from the external-agent control
 surface. The Web dashboard reads research, coverage, candidate evidence, strategy
-validation, deployment receipts and execution reports. A local browser can
-configure its model and request an AI review of imported reports. An agent
-uses the CLI to initiate or manage work and to obtain
-machine-readable results. Neither surface owns an execution engine: Pi Durable
+validation, deployment receipts and execution reports. The local dashboard
+and CLI share settings for models, NautilusTrader, performance reviews and
+data. Either can request an AI review of imported reports. An agent uses the
+CLI to initiate or manage work and obtain machine-readable results. Pi Durable
 owns the task lifecycle, and NautilusTrader owns Catalog reads and backtests.
 
 ## What we borrowed from Lark
@@ -56,13 +56,14 @@ is uncertain, read that exact ID before deciding to submit it again.
 
 ## Deployment and authorization
 
-Keep the server bound to localhost or put it behind a trusted access layer. A
-non-loopback deployment must configure `ALPHA_AGENT_TOKEN` for research writes
-and use HTTPS. The local, loopback-only setup can operate without that token.
-Strategy writes retain their separately configured `ALPHA_STRATEGY_TOKEN`.
-These settings are independent of model credentials. The service rejects
-browser-origin run and strategy writes rather than relying only on hidden
-buttons. Do not directly expose the reporting API to unauthenticated visitors.
+Configure the service through the local **Settings** page or
+`alphazonai settings` commands over loopback or an SSH tunnel. For remote CLI
+research writes, set an agent token in **Data settings** and access the
+instance over HTTPS. Strategy operations and performance uploads use the
+strategy token from **NautilusTrader settings**. Pass the corresponding
+credential with `--token-file FILE`. The service rejects browser-origin
+research and strategy writes. Keep the reporting API on a private interface
+or behind a trusted access layer.
 
 A successful push installs the exact validated strategy package as inactive.
 It does not attach an exchange account, start Nautilus live trading, or

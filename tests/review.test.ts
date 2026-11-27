@@ -21,6 +21,9 @@ test('retrying a review preserves its primary report, question and language',()=
   assert.ok(!sameReviewRequest(request,reviewRequest({...raw,reportIds:[...ids].reverse()})));
   assert.ok(!sameReviewRequest(request,reviewRequest({...raw,objective:'Compare fills'})));
   assert.ok(!sameReviewRequest(request,reviewRequest({...raw,language:'en'})));
+  const saved=reviewRequest(raw,{language:'en',objective:'Trading costs'});
+  assert.deepEqual(saved,{...raw,language:'en',objective:'Trading costs'});
+  assert.ok(sameReviewRequest(request,reviewRequest({...raw,language:'zh-CN',objective:''},saved)));
   assert.throws(()=>reviewRequest({...raw,reportIds:[ids[0],ids[0]]}),/BAD_REQUEST/);
 });
 
@@ -38,7 +41,8 @@ test('review resumes its decision from the persisted diagnosis after restart',{t
   const firstDecision=Promise.withResolvers<void>();
   const calls:string[]=[];
   let rejectDecision=false;
-  const {PerformanceReview,extension}=createCogAlpha(undefined,async(api,_ctx,key,prompt)=>{
+  const workers={stateDir:dir,nautilusSettings:async()=>({python:'python3',targets:[]})};
+  const {PerformanceReview,extension}=createCogAlpha(workers,undefined,async(api,_ctx,key,prompt)=>{
     calls.push(key);
     if(key==='review:diagnosis')return JSON.stringify(diagnosis);
     assert.ok(prompt.includes(diagnosis.findings[0].observation));

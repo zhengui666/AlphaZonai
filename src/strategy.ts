@@ -1,18 +1,15 @@
 import {spawn} from 'node:child_process';
-import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {timingSafeEqual} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 
 export type Target = { id:string; label:string; kind:'local'|'ssh'; roles:('backtest'|'deploy')[]; profile?:string; alias?:string; sshConfig?:string; marketContext?:string };
+export type ReceiverSettings = {python:string;targets:Target[]};
 const slug = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 export const strategyId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const receiver=fileURLToPath(new URL('../quant/strategy_receiver.py',import.meta.url));
 
-export async function readTargets():Promise<Target[]> {
-  const file=process.env.ALPHA_STRATEGY_TARGETS;
-  if(!file)return [];
-  const raw=JSON.parse(await readFile(file,'utf8'));
+export function validateTargets(raw:unknown):Target[] {
   if(!Array.isArray(raw)||new Set(raw.map(x=>x?.id)).size!==raw.length)throw Error('STRATEGY_TARGET_CONFIG');
   return raw.map((x:any)=>{
     if(!x||typeof x.id!=='string'||!slug.test(x.id)||typeof x.label!=='string'||!x.label.trim()||
@@ -25,7 +22,7 @@ export async function readTargets():Promise<Target[]> {
   });
 }
 
-export function authorizedStrategyWrite(header:string|undefined,token=process.env.ALPHA_STRATEGY_TOKEN){
+export function authorizedStrategyWrite(header:string|undefined,token:string){
   if(!token||typeof header!=='string'||!header.startsWith('Bearer '))return false;
   const a=Buffer.from(header.slice(7)),b=Buffer.from(token);
   return a.length===b.length&&timingSafeEqual(a,b);
@@ -65,12 +62,12 @@ export function strategyEvidence(run:any){
   }));
 }
 
-export async function callTarget(targetId:string, operation:'backtest'|'stage', request:any, taskSignal:AbortSignal){
+export async function callTarget(settings:ReceiverSettings,targetId:string, operation:'backtest'|'stage', request:any, taskSignal:AbortSignal){
   const role=operation==='backtest'?'backtest':'deploy';
-  const target=(await readTargets()).find(x=>x.id===targetId&&x.roles.includes(role));
+  const target=settings.targets.find(x=>x.id===targetId&&x.roles.includes(role));
   if(!target)throw Error('STRATEGY_TARGET_MISSING');
   const signal=AbortSignal.any([taskSignal,AbortSignal.timeout(operation==='backtest'?900_000:45_000)]);
-  const command=target.kind==='local' ? (process.env.ALPHA_PYTHON||'python3') : 'ssh';
+  const command=target.kind==='local'?settings.python:'ssh';
   const args=target.kind==='local'?[receiver,'--profile',target.profile!]:
     ['-F',target.sshConfig!,'-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ClearAllForwardings=yes',
      '-o','PermitLocalCommand=no','-o','ForwardAgent=no','-o','ForwardX11=no','-o','IdentitiesOnly=yes','-o','ControlPath=none','-o','ConnectTimeout=10','-T',target.alias!,'alphazonai-receive'];

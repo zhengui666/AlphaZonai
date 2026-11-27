@@ -1,13 +1,13 @@
-import {mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';
-import {join} from 'node:path';
-import {randomUUID} from 'node:crypto';
-import {getSupportedThinkingLevels,type Models} from '@earendil-works/pi-ai/models';
+import {createModels,getSupportedThinkingLevels,type Models} from '@earendil-works/pi-ai/models';
+import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
+import {openaiCodexProvider} from '@earendil-works/pi-ai/providers/openai-codex';
 import type {Credential,CredentialStore} from '@earendil-works/pi-ai';
+import type {settingsStore} from './settings.ts';
 
 export type ServiceTier='default'|'priority';
 export type ModelProvider='openai'|'openai-codex';
 export type ModelChoice={provider:ModelProvider;model:string;thinking:string;speed:ServiceTier|null};
-type State=Partial<Record<ModelProvider,Credential>> & {defaults?:ModelChoice};
+export type ModelState=Partial<Record<ModelProvider,Credential>> & {defaults?:ModelChoice};
 const providerId=(id:string):id is ModelProvider=>id==='openai'||id==='openai-codex';
 // Model discovery is owned by Pi. This separate metadata records documented
 // API speed eligibility, not the models offered to a user or account entitlements.
@@ -48,48 +48,33 @@ export function providerSpeed(payload:Record<string,unknown>, model:SpeedModel, 
   return (speed==='default'||speed==='priority')&&speedTiers(model).includes(speed)
     ? {...payload,service_tier:speed} : payload;
 }
-export function isLocalSettingsHost(value:string|undefined){
-  return typeof value==='string'&&/^(localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i.test(value);
+export function createSettingsModels(credentials:CredentialStore){
+  // The OpenAI SDK also reads its own environment when constructing an authenticated request.
+  for(const key of Object.keys(process.env))if(key.startsWith('OPENAI_'))delete process.env[key];
+  const models=createModels({credentials,authContext:{env:async()=>undefined,fileExists:async()=>false}});
+  models.setProvider(openaiProvider());
+  models.setProvider(openaiCodexProvider());
+  return models;
 }
-export function modelStore(dir:string){
-  const file=join(dir,'model-settings.json');
-  let tail:Promise<unknown>=Promise.resolve();
-  async function read():Promise<State>{
-    try{return JSON.parse(await readFile(file,'utf8'));}catch(e:any){if(e.code==='ENOENT')return {};throw e;}
-  }
-  function edit<T>(fn:(s:State)=>Promise<T>){
-    const op=tail.then(async()=>{
-      await mkdir(dir,{recursive:true});
-      const s=await read(), out=await fn(s);
-      const tmp=join(dir,'.model-settings-'+randomUUID());
-      try{
-        await writeFile(tmp,JSON.stringify(s),{mode:0o600,flag:'wx'});
-        await rename(tmp,file);
-      }finally{await rm(tmp,{force:true});}
-      return out;
-    });
-    tail=op.catch(()=>{});
-    return op;
-  }
+export function modelStore(store:ReturnType<typeof settingsStore>){
+  const read=async()=>(await store.read()).model;
   const credentials:CredentialStore={
     read:async id=>providerId(id)?(await read())[id]:undefined,
     list:async()=>{const s=await read();return (['openai','openai-codex'] as const).flatMap(id=>s[id]?[{providerId:id,type:s[id].type}]:[]);},
     modify:async(id,fn,options)=>{
       if(!providerId(id))throw Error('MODEL_UNKNOWN');
-      return edit(async s=>{
+      return store.edit(async ({model})=>{
         options?.signal?.throwIfAborted();
-        const out=await fn(s[id]);
-        if(out)s[id]=out;
-        return s[id];
+        const out=await fn(model[id]);
+        if(out)model[id]=out;
+        return model[id];
       });
     },
-    delete:async id=>{if(providerId(id))await edit(async s=>{delete s[id];});},
+    delete:async id=>{if(providerId(id))await store.edit(({model})=>{delete model[id];});},
   };
   return {credentials,
     defaults:async()=>(await read()).defaults??null,
-    save:async(defaults:ModelChoice)=>edit(async s=>{s.defaults=defaults;return defaults;}),
-    savedKey:async()=>(await read()).openai?.type==='api_key',
-    savedChatGPT:async()=>(await read())['openai-codex']?.type==='oauth',
+    save:async(defaults:ModelChoice)=>store.edit(({model})=>{model.defaults=defaults;return defaults;}),
   };
 }
 export async function checkOpenAIKey(value:unknown){

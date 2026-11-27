@@ -3,32 +3,64 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createModels} from '@earendil-works/pi-ai/models';
 import {openaiCodexProvider} from '@earendil-works/pi-ai/providers/openai-codex';
 import {openaiProvider} from '@earendil-works/pi-ai/providers/openai';
-import {choice,isLocalSettingsHost,modelStore,modelView,providerSpeed,recordedStrategyModel} from '../src/model-settings.ts';
+import {choice,createSettingsModels,modelStore,modelView,providerSpeed,recordedStrategyModel} from '../src/model-settings.ts';
+import {settingsStore} from '../src/settings.ts';
 
 test('model settings survive a restart and secret storage remains private',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'az-model-'));
   try{
-    const first=modelStore(dir);
+    const first=modelStore(settingsStore(dir));
     const model=openaiProvider().getModels().find(x=>x.id==='gpt-5.4')!;
     const defaultChoice=choice({model:model.id,thinking:'off',speed:'priority'},[modelView(model)]);
     await Promise.all([
       first.credentials.modify('openai',async()=>({type:'api_key',key:'unit-test-only-key'})),
       first.save(defaultChoice),
     ]);
-    const fresh=modelStore(dir);
-    assert.equal((await stat(join(dir,'model-settings.json'))).mode&0o777,0o600);
+    const fresh=modelStore(settingsStore(dir));
+    assert.equal((await stat(join(dir,'settings.json'))).mode&0o777,0o600);
     assert.deepEqual(await fresh.defaults(),defaultChoice);
     assert.deepEqual(await fresh.credentials.list(),[{providerId:'openai',type:'api_key'}]);
-    const models=createModels({credentials:fresh.credentials});
-    models.setProvider(openaiProvider());
+    const models=createSettingsModels(fresh.credentials);
     assert.equal((await models.getAuth('openai'))?.auth.apiKey,'unit-test-only-key');
     await fresh.credentials.delete('openai');
-    assert.equal(await fresh.savedKey(),false);
+    assert.equal(await fresh.credentials.read('openai'),undefined);
     assert.deepEqual(await fresh.defaults(),defaultChoice);
   }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('only saved credentials reach model requests and disconnecting OpenAI keeps ChatGPT available',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'az-model-auth-'));
+  const hostEnv=process.env;
+  process.env={...hostEnv,OPENAI_API_KEY:'ambient-key',OPENAI_CUSTOM_HEADERS:'Authorization: Bearer ambient-header',
+    OPENAI_ORG_ID:'ambient-org',OPENAI_PROJECT_ID:'ambient-project'};
+  try{
+    const {credentials}=modelStore(settingsStore(dir));
+    const models=createSettingsModels(credentials);
+    await credentials.modify('openai',async()=>({type:'api_key',key:'sk-saved-key'}));
+    await credentials.modify('openai-codex',async()=>({type:'oauth',access:'saved-session',refresh:'refresh',expires:Date.now()+3_600_000}));
+    const model=models.getModel('openai','gpt-5.4')!;
+    let sent:Headers|undefined;
+    await models.completeSimple(model,{messages:[]},{fetch:async(input,init)=>{
+      sent=new Request(input,init).headers;
+      return new Response(null,{status:401});
+    }});
+    assert.ok(sent);
+    assert.equal(sent.get('authorization'),'Bearer sk-saved-key');
+    assert.equal(sent.get('openai-organization'),null);
+    assert.equal(sent.get('openai-project'),null);
+    await models.logout('openai');
+    assert.equal(await models.checkAuth('openai'),undefined);
+    assert.equal(await models.getAuth('openai'),undefined);
+    assert.deepEqual(await models.getAvailable('openai'),[]);
+    assert.equal((await models.getAuth('openai-codex'))?.auth.apiKey,'saved-session');
+    const message=await models.completeSimple(model,{messages:[]},{fetch:async()=>assert.fail('Unexpected request')});
+    assert.match(message.errorMessage??'',/not configured: openai/);
+  }finally{
+    process.env=hostEnv;
+    await rm(dir,{recursive:true,force:true});
+  }
 });
 
 test('model choices reject unsupported intensity and map only supported service tier',()=>{
@@ -45,8 +77,6 @@ test('model choices reject unsupported intensity and map only supported service 
   assert.equal(providerSpeed(payload,unknown,'priority'),payload);
   assert.equal(providerSpeed(payload,model,null),payload);
   assert.equal(providerSpeed(payload,{provider:'other',api:'responses'},'priority'),payload);
-  assert.equal(isLocalSettingsHost('127.0.0.1:25447'),true);
-  assert.equal(isLocalSettingsHost('127.0.0.1.example.org'),false);
 });
 
 test('ChatGPT choices are distinct from API models with the same id',()=>{
