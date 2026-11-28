@@ -53,6 +53,40 @@ test('CLI discovers commands and previews exact payload without credentials or n
   assert.equal(bad.code,2);assert.equal(bad.out,'');assert.equal(JSON.parse(bad.err).error.code,'USAGE');
 });
 
+test('research submits the same native query and timestamp precision shown in the preview',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'az-query-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const data={data_cls:'nautilus_trader.model.data:TradeTick',identifiers:['EUR/USD.SIM']};
+  const file=join(dir,'query.json');
+  await writeFile(file,JSON.stringify(data));
+  const start='2026-10-01T10:00:00.123456789+09:00',end='2026-10-01T02:00:00Z';
+  const args=['runs','start','--id',run,'--start',start,'--end',end,'--target-field','price','--instrument-field','instrument_id'];
+  const expected={id:run,preset:'minute',start,end,horizon:5,seed:42,data,targetField:'price',instrumentField:'instrument_id'};
+  const preview=await invoke([...args,'--data-file','-','--dry-run'],JSON.stringify(data));
+  assert.equal(preview.code,0,preview.err);
+  assert.deepEqual(JSON.parse(preview.out).data.body,expected);
+  const nanos='{"start":1790816400000000001,"end":1790816400000000002}';
+  const precise=await invoke([...args,'--data-file','-','--dry-run'],nanos);
+  assert.equal(precise.code,0,precise.err);
+  assert.ok(precise.out.includes(nanos));
+  await fixture(async(req,res)=>{
+    let body='';for await(const chunk of req)body+=chunk;
+    assert.deepEqual(JSON.parse(body),expected);
+    json(res,202,{id:run});
+  },async origin=>{
+    const submitted=await invoke([...args,'--url',origin,'--data-file',file]);
+    assert.equal(submitted.code,0,submitted.err);
+  });
+  for(const input of ['[3]','1','{broken']){
+    const invalid=await invoke([...args,'--data-file','-','--dry-run'],input);
+    assert.equal(invalid.code,2);
+    assert.match(JSON.parse(invalid.err).error.message,/--data-file/);
+  }
+  const conflict=await invoke([...args,'--direction-file','-','--data-file','-','--dry-run'],'{}');
+  assert.equal(conflict.code,2);
+  assert.match(JSON.parse(conflict.err).error.message,/stdin/);
+});
+
 test('CLI reads settings and submits each section without printing secret input values',async()=>{
   const secret='test-credential-value';
   const updates={

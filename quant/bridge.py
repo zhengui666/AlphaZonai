@@ -1,9 +1,13 @@
 """Catalog adapter and trusted coordinator; never imports candidate code."""
 import argparse
 import ast
+from contextlib import redirect_stdout
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
+import posixpath
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +22,7 @@ if RUNTIME == Path("/usr"):
     RUNTIME = Path("/usr")
 
 def make_labels(frame, horizon):
+    """Reproduce the contiguous minute labels of previously saved barSpec runs."""
     by_asset = frame.groupby("instrument", sort=False)
     future_close = by_asset.close.shift(-horizon)
     future_ts = by_asset.ts.shift(-horizon, fill_value=0)
@@ -65,33 +70,248 @@ def sandbox_available():
         return False
 
 
-def prepare(catalog_path, start, end, horizon, bar_spec, out):
-    from nautilus_trader.persistence.catalog import ParquetDataCatalog
-    catalog = ParquetDataCatalog(catalog_path)
-    lo, hi = pd.Timestamp(start), pd.Timestamp(end)
-    rows = []
-    for left in pd.date_range(lo.normalize(), hi, inclusive="left"):
-        a, b = max(lo, left), min(hi, left + pd.Timedelta(days=1))
-        if a>=b:
-            continue
-        for bar in catalog.bars(start=a.value, end=b.value-1):
-            if str(bar.bar_type.spec) != bar_spec or str(bar.bar_type.aggregation_source).split(".")[-1] not in ("EXTERNAL", "1"):
+def catalog_class(name):
+    from nautilus_trader.core.nautilus_pyo3 import convert_to_snake_case
+    from nautilus_trader.persistence.funcs import filename_to_class
+    from nautilus_trader.serialization.arrow.serializer import RUST_SERIALIZERS, list_schemas
+
+    # Resolve only types registered in the operator's Nautilus runtime. A request
+    # must never import a module or execute a constructor of its choosing.
+    module, _, short_name = name.rpartition(":")
+    if not module:
+        by_filename = filename_to_class(short_name)
+        if by_filename is not None:
+            return by_filename
+    snake = convert_to_snake_case(short_name)
+    for cls in (filename_to_class(snake), filename_to_class("custom_" + snake),
+                *list_schemas(), *RUST_SERIALIZERS):
+        if cls and short_name == cls.__qualname__ and (not module or module == cls.__module__):
+            return cls
+    raise LookupError(f"No Nautilus catalog data class registered for {name!r}")
+
+
+def catalog_files(catalog, files):
+    # Explicit native file selectors are scoped to the operator's catalog just
+    # like a discovered file. On local filesystems resolve symlinks as well.
+    if not isinstance(files, list):
+        raise TypeError("files must be a list of catalog paths")
+    paths = []
+    for file in files:
+        path = catalog.fs._strip_protocol(file) if "://" in file else file
+        if catalog.fs_protocol == "file":
+            root = Path(catalog.path).resolve()
+            selected = (root / path).resolve()
+            contained = selected.is_relative_to(root)
+        else:
+            root = posixpath.normpath(catalog.path)
+            selected = posixpath.normpath(path)
+            if not selected.startswith(root.rstrip("/") + "/") and "://" not in file:
+                selected = posixpath.normpath(posixpath.join(root, selected))
+            contained = posixpath.commonpath([root, selected]) == root
+        if not contained:
+            raise ValueError("Requested file is outside the configured Nautilus catalog")
+        paths.append(str(selected))
+    return paths
+
+
+def feature_frame(observations, instrument_field):
+    from nautilus_trader.model.data import CustomData
+    from nautilus_trader.model.identifiers import Identifier, InstrumentId
+    from nautilus_trader.model.objects import Price, Quantity
+    from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
+
+    rows, timestamps, instruments = [], [], []
+    for observation in observations:
+        record = observation.data if isinstance(observation, CustomData) else observation
+        cls = type(record)
+        if hasattr(cls, "to_dict"):
+            row = cls.to_dict(record)
+        else:
+            row = ArrowSerializer.serialize_batch([record], cls).to_pylist()[0]
+        # Nautilus serializes prices and quantities as strings. Convert their native
+        # typed attributes for arithmetic while keeping identifiers and text intact.
+        for key, value in row.items():
+            attr = getattr(record, key, None)
+            if isinstance(attr, (Price, Quantity, Decimal)):
+                row[key] = float(attr)
+            elif isinstance(value, Decimal):
+                row[key] = float(value)
+            elif isinstance(value, Identifier):
+                row[key] = str(value)
+        instrument = getattr(record, "instrument_id", None)
+        if instrument is None:
+            instrument = getattr(getattr(record, "bar_type", None), "instrument_id", None)
+        if instrument is None and isinstance(getattr(record, "id", None), InstrumentId):
+            instrument = record.id
+        if instrument is None and isinstance(getattr(record, "instrument", None), InstrumentId):
+            instrument = record.instrument
+        rows.append(row)
+        timestamps.append(record.ts_init)
+        instruments.append(str(instrument) if instrument is not None else None)
+
+    frame = pd.DataFrame.from_records(rows)
+    aliases = {}
+    for key in ("ts", "instrument"):
+        if key in frame:
+            alias = "native." + key
+            while alias in frame:
+                alias = "native." + alias
+            frame.rename(columns={key:alias}, inplace=True)
+            aliases[key] = alias
+
+    source = aliases.get(instrument_field, instrument_field)
+    if instrument_field is not None:
+        def series_key(value):
+            if not pd.api.types.is_scalar(value) or pd.isna(value):
+                return None
+            if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+                return None
+            return str(value) or None
+
+        instruments = frame[source].map(series_key) if source in frame else None
+    frame["ts"] = timestamps
+    frame["instrument"] = instruments
+    return frame.sort_values(["ts", "instrument"], kind="stable", ignore_index=True), aliases
+
+
+def write_features(frame, path):
+    import msgspec
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from nautilus_trader.common.config import msgspec_encoding_hook
+
+    # An opaque native metadata field can contain e.g. {} or heterogeneous
+    # nested values which have no Parquet type. Preserve only such columns as
+    # MessagePack and restore them when the evaluator opens the snapshot.
+    arrow_errors = (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError)
+    try:
+        frame.to_parquet(path, index=False)
+        return
+    except arrow_errors:
+        encoded = []
+        for name, column in frame.items():
+            if not pd.api.types.is_object_dtype(column.dtype):
                 continue
-            rows.append((bar.ts_init, str(bar.bar_type.instrument_id), *map(float, (bar.open,bar.high,bar.low,bar.close,bar.volume))))
-    frame = pd.DataFrame(rows, columns=["ts","instrument","open","high","low","close","volume"])
-    if frame.empty:
-        raise ValueError("NO_BARS")
-    frame = frame.sort_values(["ts","instrument"],ignore_index=True)
-    if frame.duplicated(["ts","instrument"]).any():
-        raise ValueError("DUPLICATE_BARS")
-    ts = pd.to_datetime(frame.ts,utc=True)
-    labels = make_labels(frame, horizon)
+            try:
+                schema = pa.Schema.from_pandas(frame[[name]], preserve_index=False)
+                with pq.ParquetWriter(pa.BufferOutputStream(), schema):
+                    pass
+            except arrow_errors:
+                frame[name] = frame[name].map(lambda value: msgspec.msgpack.encode(value, enc_hook=msgspec_encoding_hook))
+                encoded.append(name)
+        if not encoded:
+            raise
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    metadata = {**table.schema.metadata, b"alphazonai.msgpack":json.dumps(encoded).encode()}
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+
+
+def return_labels(frame, horizon, target_field, bar_streams):
+    labels = frame[["ts", "instrument"]].copy()
+    labels["target"] = np.nan
+    if target_field is None or frame.empty:
+        return labels
+    prices = pd.to_numeric(frame[target_field], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    timestamps = frame.ts.to_numpy()
+    # A query may select several bar streams of one instrument. Their prices
+    # define distinct time series even if availability timestamps coincide.
+    keys = ["instrument", "bar_type"] if bar_streams else ["instrument"]
+    horizon_ns = horizon * 60_000_000_000
+    for indices in frame.groupby(keys, sort=False).indices.values():
+        times = timestamps[indices]
+        if horizon_ns > int(times[-1]) - int(times[0]):
+            continue
+        current = indices[times <= int(times[-1]) - horizon_ns]
+        origins = timestamps[current]
+        # Last observed price by the horizon, with actual subsequent data and
+        # follow-through to that horizon. Never synthesize a minute grid.
+        positions = times.searchsorted(origins + horizon_ns, side="right") - 1
+        future = indices[positions]
+        base = prices[current]
+        later = prices[future]
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            returns = later / base - 1
+        eligible = (times[positions] > origins) & np.isfinite(base) & (base != 0) & np.isfinite(returns)
+        labels.loc[current[eligible], "target"] = returns[eligible]
+    return labels
+
+
+def prepare(catalog_path, start, end, horizon, data, out, target_field=None, instrument_field=None):
+    from nautilus_trader.core.datetime import time_object_to_dt
+    from nautilus_trader.model.data import Bar, QuoteTick
+    from nautilus_trader.model.enums import AggregationSource
+    from nautilus_trader.persistence.catalog import ParquetDataCatalog
+    from nautilus_trader.persistence.funcs import parse_filters_expr
+
+    catalog = ParquetDataCatalog.from_uri(str(catalog_path))
+    legacy_bar_spec = data if isinstance(data, str) else None
+    query = {} if legacy_bar_spec else dict(data or {})
+    data_cls = catalog_class(query.pop("data_cls", "Bar"))
+    def timestamp(value):
+        # JSON clients carry full-precision Unix nanoseconds as decimal text.
+        if isinstance(value, str) and re.fullmatch(r"[+-]?\d{16,}", value):
+            value = int(value)
+        return time_object_to_dt(value)
+
+    lo, hi = timestamp(start), timestamp(end) - pd.Timedelta(1, unit="ns")
+    if lo > hi:
+        raise ValueError("Research end must be later than start")
+    if query.get("start") is not None:
+        lo = max(lo, timestamp(query["start"]))
+    if query.get("end") is not None:
+        hi = min(hi, timestamp(query["end"]))
+    query.update(start=lo, end=hi)
+    if query.get("filter_expr") is not None:
+        query["filter_expr"] = parse_filters_expr(query["filter_expr"])
+    if query.get("files") is not None:
+        query["files"] = catalog_files(catalog, query["files"])
+    if query.get("where"):
+        # Preserve precedence of predicates containing OR with native time bounds.
+        query["where"] = f"({query['where']})"
+    records = catalog.query(data_cls=data_cls, **query)
+    if legacy_bar_spec:
+        # A durable task created before native queries had a different selection
+        # and fixed feature schema. Resume it with its recorded contract.
+        records = [bar for bar in records if str(bar.bar_type.spec) == legacy_bar_spec
+                   and bar.bar_type.aggregation_source == AggregationSource.EXTERNAL]
+    frame, aliases = feature_frame(records, instrument_field)
+    del records
+    if legacy_bar_spec:
+        frame = frame.reindex(columns=["ts","instrument","open","high","low","close","volume"])
+    if issubclass(data_cls, QuoteTick) and not frame.empty and "mid" not in frame:
+        frame["mid"] = (frame.bid_price + frame.ask_price) / 2
+    target_field = aliases.get(target_field, target_field)
+    if target_field is None:
+        target_field = next((field for field in ("close", "price", "mid", "close_price") if field in frame), None)
+        if target_field is None and data_cls.__name__ in ("MarkPriceUpdate", "IndexPriceUpdate"):
+            target_field = "value"
+    if target_field not in frame or frame.empty:
+        target_field = None
+    elif pd.api.types.is_string_dtype(frame[target_field].dtype) and target_field != "instrument":
+        values = pd.to_numeric(frame[target_field], errors="coerce")
+        if values.notna().equals(frame[target_field].notna()):
+            frame[target_field] = values
+    if legacy_bar_spec:
+        labels = make_labels(frame, horizon)
+    else:
+        labels = return_labels(frame, horizon, target_field, issubclass(data_cls, Bar))
+    ts = pd.to_datetime(frame.ts, unit="ns", utc=True)
     out.mkdir(parents=True,exist_ok=True)
     for name,df in [("features",frame),("labels",labels)]:
         tmp = out / (name + ".tmp")
-        df.to_parquet(tmp,index=False)
+        if name == "features":
+            write_features(df, tmp)
+        else:
+            df.to_parquet(tmp,index=False)
         tmp.replace(out / (name + ".parquet"))
-    return {"rows":len(frame),"instruments":frame.instrument.nunique(),"from":str(ts.min()),"through":str(ts.max()),"observedMinutes":ts.nunique(),"expectedMinutes":int((hi-lo)/pd.Timedelta(minutes=1))}
+    # The subsequent holdout must begin after both the requested window and
+    # the latest availability timestamp actually used by the evaluator.
+    last_ns = max(hi.value, int(frame.ts.max())) if len(frame) else hi.value
+    return {"rows":len(frame), "instruments":frame.instrument.nunique(),
+            "from":str(ts.min()) if len(ts) else None, "through":str(ts.max()) if len(ts) else None,
+            "observedTimestamps":ts.nunique(), "columns":frame.columns.drop(["ts","instrument"]).tolist(),
+            "targetField":target_field, "instrumentField":instrument_field,
+            "labelRows":int(labels.target.count()), "endExclusiveNs":str(last_ns + 1)}
 
 def score(data, source, max_nan):
     try:
@@ -134,9 +354,22 @@ if __name__=="__main__":
     args=p.parse_args()
     cfg=json.load(sys.stdin)
     if args.operation=="prepare":
-        if not sandbox_available():
+        try:
+            with redirect_stdout(sys.stderr):
+                result=prepare(cfg["catalog"],cfg["start"],cfg["end"],cfg["horizon"],
+                               cfg.get("data", cfg.get("barSpec")),args.path,cfg.get("targetField"),cfg.get("instrumentField"))
+        except BaseException as exc:
+            # PyO3 exposes Rust panics as a BaseException in a synthetic module.
+            # Propagate cancellation and interpreter exits normally.
+            if not isinstance(exc, Exception) and (type(exc).__module__, type(exc).__name__) != ("pyo3_runtime", "PanicException"):
+                raise
+            message = f"{type(exc).__name__}: {exc}"
+            message = re.sub(r"(\w[\w+.-]*://)[^/\s]*@", r"\1[redacted]@", message)
+            message = re.sub(r"(\w[\w+.-]*://[^?#\s]*)[?#][^\s]*", r"\1?[redacted]", message)
+            print(json.dumps({"error":message[:1000]}))
+            sys.exit(1)
+        if result["labelRows"] and not sandbox_available():
             raise RuntimeError("SANDBOX_UNAVAILABLE")
-        result=prepare(cfg["catalog"],cfg["start"],cfg["end"],cfg["horizon"],cfg["barSpec"],args.path)
     else:
         result=score(args.path,cfg["code"],cfg["nanLimit"])
     print(json.dumps(result, allow_nan=False))

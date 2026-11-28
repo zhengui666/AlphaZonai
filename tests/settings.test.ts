@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,resolve} from 'node:path';
 import {exportJWK,generateKeyPair,SignJWT} from 'jose';
 import {applySettings,cloudflareSettingsAccess,localSettingsRequest,settingsStore} from '../src/settings.ts';
 
@@ -30,6 +30,13 @@ test('section edits persist together and a rejected edit leaves the saved values
   assert.deepEqual(saved.nautilus,{python:'/usr/bin/python3',targets:[],strategyToken:'delivery-token'});
   await save('data',{agentToken:''});
   assert.equal((await store.read()).data.agentToken,'');
+
+  await save('data',{catalog:'research-catalog'});
+  assert.equal((await store.read()).data.catalog,resolve('research-catalog'));
+  const catalog='s3://market-data/venue/catalog';
+  await save('data',{catalog});
+  await save('data',{port:8686});
+  assert.equal((await settingsStore(dir).read()).data.catalog,catalog);
 });
 
 test('settings require a local host name and a connection from the host',()=>{

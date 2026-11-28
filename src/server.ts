@@ -10,7 +10,7 @@ import {paper,minute} from './method.ts';
 import {agentWriteError,researchDirection,runAdmission,sameRunAdmission} from './research-context.ts';
 import {chatGPTLogin,checkOpenAIKey,choice,createSettingsModels,modelStore,modelView,recordedStrategyModel,type ModelChoice} from './model-settings.ts';
 import {applySettings,cloudflareSettingsAccess,localSettingsRequest,settingsStore,type Settings} from './settings.ts';
-import {authorizedStrategyWrite,strategyEvidence,strategyId} from './strategy.ts';
+import {authorizedStrategyWrite,strategyEvidence,strategyId,strategyWindow} from './strategy.ts';
 import {importPerformance,performanceReport,PerformanceIndex,PerformanceReport} from './performance.ts';
 import {Reviews,ReviewInputs,reviewRequest,sameReviewRequest} from './review.ts';
 import {createDailySchedule,DailyScheduleState,ensureDailySchedule} from './daily-review.ts';
@@ -43,16 +43,30 @@ const assets:Record<string,string>={'/':'index.html','/assets/style.css':'style.
 const mime:Record<string,string>={html:'text/html',css:'text/css',js:'text/javascript'};
 const snapshot=async()=>((await harness.snapshot(Runs,root.id,ctx))?.runs||{}) as Record<string,any>;
 const send=(res:any,status:number,result:any)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(result));};
-async function body(req:any,kind?:'report'|'settings'){
-  const limit=kind==='report'?32*1024*1024:kind==='settings'?1024*1024:16000;
+function parseRunBody(text:string){
+  // Pi persists JSON. Keep large integer query bounds as decimal strings so a
+  // read, retry or handoff to Python cannot round away a nanosecond.
+  const bounds:[Record<string,unknown>,string,string][]=[];
+  const raw=JSON.parse(text,function(key,value,context){
+    if((key==='start'||key==='end')&&typeof value==='number'&&!Number.isSafeInteger(value)&&/^-?\d+$/.test(context.source))
+      bounds.push([this,key,context.source]);
+    return value;
+  });
+  for(const [owner,key,literal] of bounds){
+    if(owner===raw||owner===raw?.data)owner[key]=literal;
+  }
+  return raw;
+}
+async function body(req:any,kind?:'report'|'settings'|'run'){
+  const limit=kind==='report'?32*1024*1024:kind==='settings'||kind==='run'?1024*1024:16000;
   let data='',size=0;
   req.setEncoding('utf8');
   for await(const chunk of req.iterator({destroyOnReturn:false})){
     size+=Buffer.byteLength(chunk);
-    if(size>limit){req.resume();throw Error(kind==='report'?'PERFORMANCE_REPORT_TOO_LARGE':'BAD_REQUEST');}
+    if(size>limit){req.resume();throw Error(kind==='report'?'PERFORMANCE_REPORT_TOO_LARGE':kind==='run'?'RESEARCH_REQUEST_TOO_LARGE':'BAD_REQUEST');}
     data+=chunk;
   }
-  try{return JSON.parse(data);}catch{throw new Error('BAD_REQUEST');}
+  try{return kind==='run'?parseRunBody(data):JSON.parse(data);}catch{throw new Error('BAD_REQUEST');}
 }
 async function availableModels(){return (await models.getAvailable()).map(modelView);}
 async function modelConversation(tx:Tx,settings:ModelChoice){
@@ -84,8 +98,9 @@ async function settingsView({model,nautilus:{strategyToken,...nautilus},review,d
     nautilus:{...nautilus,strategyTokenConfigured:Boolean(strategyToken)},review,data:{...data,agentTokenConfigured:Boolean(agentToken)}};
 }
 async function input(raw:any){
-  const validDate=(x:unknown)=>typeof x==='string'&&/^\d{4}-\d\d-\d\d$/.test(x)&&Number.isFinite(Date.parse(x))&&new Date(x).toISOString().slice(0,10)===x;
-  if(!raw||!['paper','minute'].includes(raw.preset)||!validDate(raw.start)||!validDate(raw.end)||raw.start>=raw.end)throw new Error('INVALID_DATES');
+  if(!raw||!['paper','minute'].includes(raw.preset))throw new Error('BAD_REQUEST');
+  const timestamp=(value:unknown)=>typeof value==='string'?value.trim().length>0:Number.isSafeInteger(value);
+  if(!timestamp(raw.start)||!timestamp(raw.end))throw new Error('INVALID_DATES');
   const horizon=Number(raw.horizon),seed=Number(raw.seed);
   if(!Number.isSafeInteger(horizon)||horizon<1||!Number.isSafeInteger(seed))throw new Error('BAD_REQUEST');
   const {model:{defaults},data:{catalog}}=await store.read();
@@ -102,12 +117,11 @@ async function input(raw:any){
       rules[key]=n;
     }
   }
-  return {preset:raw.preset,catalog,barSpec:'1-MINUTE-LAST',...selected,start:raw.start,end:raw.end,horizon,seed,direction:researchDirection(raw.direction),rules};
-}
-function strategyDate(x:any){
-  if(typeof x!=='string'||!/^\d{4}-\d\d-\d\d$/.test(x)||!Number.isFinite(Date.parse(x)))return null;
-  const date=new Date(x).toISOString();
-  return date.slice(0,10)===x?date:null;
+  const researchInput={start:raw.start,end:raw.end,horizon,seed,direction:researchDirection(raw.direction),
+    data:raw.data??{data_cls:'nautilus_trader.model.data:Bar'},
+    ...(raw.instrumentField===undefined?{}:{instrumentField:raw.instrumentField}),
+    ...(raw.targetField===undefined?{}:{targetField:raw.targetField})};
+  return {preset:raw.preset,catalog,...selected,researchInput,rules};
 }
 // A connection published on the Docker host's loopback can arrive from its bridge gateway.
 const routes=container?await readFile('/proc/net/route','utf8').catch(()=>''):'';
@@ -233,7 +247,7 @@ const server=createServer(async (req,res)=>{
       return send(res,200,Object.values(runs).map(({id,preset,status,created,current,progress,input})=>({id,preset,status,created,current,progress,direction:input?.direction??''})).reverse());
     }
     if(path==='/api/runs'&&method==='POST'){
-      const raw=await body(req);
+      const raw=await body(req,'run');
       const id=raw?.id;
       if(typeof id!=='string'||!strategyId.test(id))throw new Error('BAD_REQUEST');
       const admission=runAdmission(raw);
@@ -246,8 +260,9 @@ const server=createServer(async (req,res)=>{
         const conversation=await modelConversation(tx,config);
         // The run owns Agent work in a separate configured conversation; records
         // are surfaced via the root Pi document using that address in the input.
-        const task=await tx.createTask(Run,{...config,id,docId:root.id},{ownership:{kind:'conversation'},conversationId:conversation.id});
-        runs[id]={id,task,admission,preset:config.preset,provider:config.provider,model:config.model,thinking:config.thinking,speed:config.speed,input:{start:config.start,end:config.end,horizon:config.horizon,seed:config.seed,barSpec:config.barSpec,direction:config.direction},status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
+        const {researchInput,...settings}=config;
+        const task=await tx.createTask(Run,{...settings,...researchInput,id,docId:root.id},{ownership:{kind:'conversation'},conversationId:conversation.id});
+        runs[id]={id,task,admission,preset:config.preset,provider:config.provider,model:config.model,thinking:config.thinking,speed:config.speed,input:researchInput,status:'queued',created:new Date().toISOString(),generations:[],current:0,limit:config.rules.generations};
         return true;
       },ctx);
       if(!admitted)return send(res,409,{error:'RUN_ID_CONFLICT'});
@@ -279,16 +294,18 @@ const server=createServer(async (req,res)=>{
           const brief=(raw.brief??'').trim();
           const evidence=strategyEvidence(run);
           if(!evidence.length)return send(res,409,{error:'STRATEGY_NO_ELITES'});
-          const start=strategyDate(raw.start),end=strategyDate(raw.end),researchEnd=strategyDate(run.input.end);
-          if(!start||!end||!researchEnd||start<researchEnd||end<=start)
-            return send(res,400,{error:'STRATEGY_BACKTEST_DATES'});
+          const window=strategyWindow(run,raw);
+          if(!window)return send(res,400,{error:'STRATEGY_BACKTEST_DATES'});
+          const {start,end,researchEnd}=window;
           const result=await root.commit(async tx=>{
             const r=(await tx.doc(Runs,root.id)).runs[id];
             r.strategies??={};
             const existing=r.strategies[raw.id];
             if(existing)return existing.target===raw.target&&existing.start===start&&existing.end===end&&existing.brief===brief;
             const conversation=await modelConversation(tx,tracked);
-            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence,brief,marketContext:selectedTarget.marketContext??'',researchBarSpec:r.input.barSpec,researchContext:{horizon:r.input.horizon,barSpec:r.input.barSpec,direction:r.input.direction??''},modelSettings:tracked},
+            const task=await tx.createTask(StrategyBuild,{docId:root.id,runId:id,id:raw.id,target:raw.target,start,end,researchEnd,evidence,brief,marketContext:selectedTarget.marketContext??'',
+              researchContext:{...r.input,...(r.coverage?.columns&&{featureColumns:r.coverage.columns}),
+                ...(r.coverage?.targetField&&{targetField:r.coverage.targetField})},modelSettings:tracked},
               {ownership:{kind:'conversation'},conversationId:conversation.id});
             r.strategies[raw.id]={task,id:raw.id,status:'generating',target:raw.target,start,end,brief,modelSettings:tracked,deployments:{}};
             return true;
@@ -347,7 +364,7 @@ const server=createServer(async (req,res)=>{
     }
     return send(res,404,{error:'NOT_FOUND'});
   } catch(e:any){
-    if(e.message==='PERFORMANCE_REPORT_TOO_LARGE')return send(res,413,{error:e.message});
+    if(['PERFORMANCE_REPORT_TOO_LARGE','RESEARCH_REQUEST_TOO_LARGE'].includes(e.message))return send(res,413,{error:e.message});
     const known=['BAD_REQUEST','INVALID_DATES','MODEL_REQUIRED','MODEL_UNKNOWN','THINKING_UNSUPPORTED','SPEED_UNSUPPORTED','MODEL_KEY_INVALID','MODEL_CONNECTION_FAILED','MODEL_CREDENTIAL','STRATEGY_TARGET_CONFIG','INVALID_RESEARCH_DIRECTION','INVALID_PERFORMANCE_REPORT'];
     if(!known.includes(e.message))console.error(e);
     if(!res.headersSent)send(res,known.includes(e.message)?400:500,{error:known.includes(e.message)?e.message:'SERVER_ERROR'});

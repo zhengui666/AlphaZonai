@@ -28,6 +28,27 @@ export function authorizedStrategyWrite(header:string|undefined,token:string){
   return a.length===b.length&&timingSafeEqual(a,b);
 }
 
+function strategyDate(value:unknown){
+  if(typeof value!=='string'||!/^\d{4}-\d\d-\d\d$/.test(value)||!Number.isFinite(Date.parse(value)))return null;
+  const iso=new Date(value).toISOString();
+  return iso.slice(0,10)===value?iso:null;
+}
+
+export function strategyWindow(run:{input:{end:unknown};coverage?:{endExclusiveNs?:string}|null},request:{start:unknown;end:unknown}){
+  const start=strategyDate(request.start),end=strategyDate(request.end);
+  if(!start||!end||end<=start)return null;
+  let researchEnd;
+  if(run.coverage?.endExclusiveNs===undefined){
+    researchEnd=strategyDate(run.input.end);
+  }else{
+    // Round up for the receiver's ISO datetime so it cannot start inside the research interval.
+    const nanos=BigInt(run.coverage.endExclusiveNs);
+    const millis=nanos/1_000_000n+(nanos%1_000_000n>0n?1n:0n);
+    researchEnd=new Date(Number(millis)).toISOString();
+  }
+  return researchEnd&&start>=researchEnd?{start,end,researchEnd}:null;
+}
+
 export function validateStrategyPlan(raw:any) {
   const allowed=['config','configClass','source','strategyClass','title'];
   const className=/^[A-Za-z][A-Za-z0-9_]{0,99}$/;

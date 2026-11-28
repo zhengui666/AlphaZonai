@@ -40,7 +40,7 @@ reads and updates the same settings. [Open local settings](http://127.0.0.1:8787
 | Model settings | Connect an OpenAI API key or sign in to ChatGPT with Pi's device flow. Choose the default model, reasoning effort and speed. |
 | NautilusTrader settings | Select the Python interpreter, configure local and SSH strategy targets, and set the strategy token for delivery and performance uploads. |
 | Performance review settings | Enable daily reviews, set the Shanghai time (default 08:00) and choose the review language and objective. |
-| Data settings | Set the Nautilus catalog path, Pi state directory, server address and port, research agent token and Cloudflare Access application. |
+| Data settings | Set the Nautilus catalog path or URI, Pi state directory, server address and port, research agent token and Cloudflare Access application. |
 
 ```sh
 alphazonai settings get
@@ -71,6 +71,11 @@ as `alphazonai` in the service image. To list runs in the container above, use
 ```sh
 docker exec alphazonai alphazonai runs list
 ```
+
+To select research inputs, pass a native NautilusTrader catalog query with
+`alphazonai runs start --data-file FILE`. The file selects a data class and
+optional identifiers, such as full bar type IDs. Omitting it queries bars
+across the configured catalog for the requested interval. [Research workflow examples](cli/WORKFLOWS.md#from-research-to-staging)
 
 Use `--url` to select another instance. For settings behind Cloudflare Access,
 pass the application's user JWT with `--token-file FILE`. Research and strategy

@@ -56,7 +56,7 @@ export function applySettings(s:Settings,section:string,patch:unknown){
     if(patch.host&&!isIP(patch.host)&&!patch.host.split('.').every(part=>/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(part)))
       throw Error('BAD_REQUEST');
     s.data={...s.data,...patch};
-    s.data.catalog=resolve(s.data.catalog);
+    if(!/^[a-z][a-z\d+.-]*:\/\//i.test(s.data.catalog))s.data.catalog=resolve(s.data.catalog);
     s.data.stateDir=resolve(s.data.stateDir);
   }else throw Error('BAD_REQUEST');
 }
