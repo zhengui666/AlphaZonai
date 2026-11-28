@@ -32,14 +32,14 @@ The default origin is `http://127.0.0.1:8787`. Pass `--url` for another address.
 
 ## Configure an instance
 
-Use the service's loopback address or an SSH tunnel. Read `alphazonai settings get` for current values. Submit a JSON object containing the fields to change, using `--file FILE` or `--file -` for stdin. The result includes credential status. Keep input containing credentials private.
+Use the service's loopback address or an SSH tunnel for initial setup. On a configured Cloudflare Access domain, pass its HTTPS origin with `--url` and the signed-in user's application JWT with `--token-file`. Read `alphazonai settings get` for current values. Submit a JSON object containing the fields to change, using `--file FILE` or `--file -` for stdin. The result includes credential status. Keep input containing credentials private.
 
 | Section | Input |
 | --- | --- |
 | `model` | Use `action: connect` with `key` for OpenAI, or `action: chatgpt-start` and follow the device prompt in `data.model.chatGPT`. Check `settings get` for login status. Use `action: defaults` with `provider`, `model`, `thinking` and `speed` from `models list`. Other actions are `disconnect`, `chatgpt-cancel` and `chatgpt-disconnect`. |
 | `nautilus` | `python` interpreter, `targets` array for local or SSH receivers, `strategyToken` for strategy and performance writes. |
 | `review` | `enabled` for daily reviews, `time` as Shanghai-local `HH:MM`, `language` as `zh-CN` or `en`, and `objective` as review focus. |
-| `data` | `catalog` path, `stateDir` for service state, `host` and `port` for listening, and `agentToken` for research writes. Host, port and state directory take effect at service restart. |
+| `data` | `catalog` path, `stateDir` for service state, `host` and `port` for listening, and `agentToken` for research writes. Set `accessTeam` (team slug) and `accessAud` (application AUD tag) to enable Cloudflare Access for settings. Clear both to disable it. Host, port and state directory take effect at service restart. |
 
 ```sh
 printf '%s\n' '{"time":"09:30","language":"en"}' | alphazonai settings set --section review --file -

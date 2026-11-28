@@ -60,7 +60,8 @@ export function settingsPage({t,makeOption,api,updateTargets}){
     const f=forms[name].elements;
     if(name==='nautilus')return {python:f.python.value,targets:Array.from($('targetList').children,targetValues)};
     if(name==='review')return {enabled:f.enabled.checked,time:f.time.value,language:f.language.value,objective:f.objective.value};
-    return {catalog:f.catalog.value,stateDir:f.stateDir.value,host:f.host.value,port:f.port.valueAsNumber};
+    return {catalog:f.catalog.value,stateDir:f.stateDir.value,host:f.host.value,port:f.port.valueAsNumber,
+      accessTeam:f.accessTeam.value.trim(),accessAud:f.accessAud.value.trim()};
   }
   function tokenLabel(name){
     const form=forms[name],token=form.querySelector('input[type=password]');
@@ -70,6 +71,7 @@ export function settingsPage({t,makeOption,api,updateTargets}){
   }
   function fillForm(name){
     const form=forms[name],saved=settings[name];
+    form.reset();
     for(const [key,value] of Object.entries(saved)){
       const field=form.elements.namedItem(key);
       if(!field)continue;
@@ -171,7 +173,7 @@ export function settingsPage({t,makeOption,api,updateTargets}){
         const result=await api('/settings');
         if(current!==visit)return;
         settings=result;
-        message('settingsNotice',settings.writable?null:'SETTINGS_LOCAL',!settings.writable);
+        message('settingsNotice',settings.writable?null:'SETTINGS_ACCESS',!settings.writable);
         if(settings.writable){
           keyForm.elements.key.value='';showModel(true);
           for(const group of Object.keys(forms))fillForm(group);

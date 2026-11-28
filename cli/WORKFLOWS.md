@@ -27,8 +27,8 @@ Pass `--url` for another instance. Use HTTPS for non-loopback addresses.
 
 ## Settings
 
-Use the same loopback address as the dashboard, directly or through an SSH
-tunnel. Each update changes one section. Include only the fields you want
+Use the service's loopback address, an SSH tunnel or its Cloudflare Access HTTPS
+address. Each update changes one section. Include only the fields you want
 to change. A supplied `targets` array replaces the receiver list.
 
 ```sh
@@ -38,6 +38,18 @@ alphazonai settings set --section model --file private-model.json
 alphazonai settings set --section nautilus --file receivers.json
 printf '%s\n' '{"enabled":true,"time":"09:30"}' | alphazonai settings set --section review --file -
 printf '%s\n' '{"catalog":"/mnt/market-data"}' | alphazonai settings set --section data --file -
+```
+
+To enable Cloudflare Access, first use the local dashboard or CLI to set
+`accessTeam` to your team's slug and `accessAud` to the application's Audience
+(AUD) tag in **Data settings**. Clear both fields to disable remote settings.
+Sign in to the protected address, then pipe the application's JWT to the CLI.
+Use a file for the JSON update when the token comes from stdin.
+
+```sh
+cloudflared access login "$APP_URL" >/dev/null
+cloudflared access token --app "$APP_URL" | alphazonai settings get --url "$APP_URL" --token-file -
+cloudflared access token --app "$APP_URL" | alphazonai settings set --url "$APP_URL" --token-file - --section review --file review.json
 ```
 
 An OpenAI connection file contains `action` set to `connect` and a `key`.

@@ -30,15 +30,17 @@ Without a functioning sandbox, the research run stops before asking the model.
 
 ## Settings
 
-Open **Settings** on the service host or through an SSH tunnel.
-The local CLI reads and updates the same settings. [Open local settings](http://127.0.0.1:8787/#settings)
+Open **Settings** on the service host or through an SSH tunnel. For remote
+access, enter the Cloudflare Access team name and application Audience (AUD)
+tag in **Data settings**, then sign in at the protected HTTPS address. The CLI
+reads and updates the same settings. [Open local settings](http://127.0.0.1:8787/#settings)
 
 | Section | What you can change |
 | --- | --- |
 | Model settings | Connect an OpenAI API key or sign in to ChatGPT with Pi's device flow. Choose the default model, reasoning effort and speed. |
 | NautilusTrader settings | Select the Python interpreter, configure local and SSH strategy targets, and set the strategy token for delivery and performance uploads. |
 | Performance review settings | Enable daily reviews, set the Shanghai time (default 08:00) and choose the review language and objective. |
-| Data settings | Set the Nautilus catalog path, Pi state directory, server address and port, and the agent token for research writes. |
+| Data settings | Set the Nautilus catalog path, Pi state directory, server address and port, research agent token and Cloudflare Access application. |
 
 ```sh
 alphazonai settings get
@@ -70,8 +72,9 @@ as `alphazonai` in the service image. To list runs in the container above, use
 docker exec alphazonai alphazonai runs list
 ```
 
-Use `--url` to select another instance. For authenticated commands, pass
-`--token-file FILE` with the agent or strategy token set in the dashboard.
+Use `--url` to select another instance. For settings behind Cloudflare Access,
+pass the application's user JWT with `--token-file FILE`. Research and strategy
+writes use the corresponding token set in the dashboard.
 [CLI and reporting design](docs/agent-cli-design.md)
 
 ## Strategy delivery

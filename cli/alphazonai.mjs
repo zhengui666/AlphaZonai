@@ -21,13 +21,13 @@ const settingsFields={
   model:['action','key','provider','model','thinking','speed'],
   nautilus:['python','targets','strategyToken'],
   review:['enabled','time','language','objective'],
-  data:['catalog','stateDir','host','port','agentToken'],
+  data:['catalog','stateDir','host','port','agentToken','accessTeam','accessAud'],
 };
 const commands={
   id:{description:'Generate a request UUID locally.',options:{}},
   doctor:{description:'Inspect the advertised models, strategy targets and strategy-write availability.',options:{}},
-  'settings get':{description:'Read the saved settings and credential status through loopback or an SSH tunnel.',method:'GET',path:'/api/settings',options:{}},
-  'settings set':{description:'Update one settings section through loopback or an SSH tunnel.',method:'POST',path:'/api/settings/:section',
+  'settings get':{description:'Read settings locally or through Cloudflare Access.',method:'GET',path:'/api/settings',auth:'cloudflare-access',options:{}},
+  'settings set':{description:'Update one settings section locally or through Cloudflare Access.',method:'POST',path:'/api/settings/:section',auth:'cloudflare-access',
     fields:settingsFields,modelActions:['connect','disconnect','chatgpt-start','chatgpt-cancel','chatgpt-disconnect','defaults'],
     options:{section:arg('string','model, nautilus, review or data.',true),file:arg('file','JSON object containing the fields to change. Use - for stdin.',true)}},
   'models list':{description:'List available provider model IDs and capabilities.',method:'GET',path:'/api/models',options:{}},
@@ -63,7 +63,7 @@ const commands={
 };
 const globalOptions={
   url:arg('url','Service origin (default '+defaults.url+').'),
-  'token-file':arg('file','Bearer token for a protected write. Read from a file or use - for stdin.'),
+  'token-file':arg('file','Cloudflare Access application JWT for settings, or the agent/strategy bearer token for writes. Use - for stdin.'),
   'timeout-ms':arg('integer','Per-request HTTP timeout in milliseconds (default 10000).'),
   'dry-run':arg('boolean','Preview a POST without making a request or sending credentials.'),
   pretty:arg('boolean','Indent the JSON response.'),
@@ -127,7 +127,7 @@ function parse(argv){
   }
   for(const [k,v] of Object.entries(spec.options))if(v.required&&!Object.hasOwn(raw,k))throw usage('Missing --'+k+'.');
   if(raw.section&&!Object.hasOwn(settingsFields,raw.section))throw usage('--section must be model, nautilus, review or data.');
-  if(raw['token-file']==='-'&&['brief-file','direction-file','report-file'].some(k=>raw[k]==='-'))throw usage('Only one input file can use stdin.');
+  if(raw['token-file']==='-'&&['brief-file','direction-file','report-file','file'].some(k=>raw[k]==='-'))throw usage('Only one input file can use stdin.');
   if(raw.start&&raw.end&&raw.start>=raw.end)throw usage('--end must be after --start.');
   if(raw['dry-run']&&spec.method!=='POST')throw usage('--dry-run applies only to write commands.');
   return {name:selected,raw,spec};
@@ -137,7 +137,7 @@ function baseUrl(raw,settingsWrite=false){
   try{u=new URL(raw.url||defaults.url);}catch{throw usage('Invalid AlphaZonai service origin.');}
   const loopback=['127.0.0.1','localhost','[::1]'].includes(u.hostname);
   if(u.username||u.password||u.pathname!=='/'||u.search||u.hash||!(u.protocol==='https:'||(loopback&&u.protocol==='http:')))throw usage('Use an HTTPS origin, or HTTP only on loopback. URLs cannot contain credentials or a path.');
-  if(settingsWrite&&!loopback)throw usage('Update settings through a loopback origin or SSH tunnel.');
+  if(settingsWrite&&!loopback&&!raw['token-file']&&!raw['dry-run'])throw usage('Remote settings updates require a Cloudflare Access application JWT via --token-file.');
   return u.origin;
 }
 async function readText(raw,k){
@@ -200,7 +200,10 @@ async function request(req,name,raw){
   if(req.auth&&raw['token-file']){
     const token=(await readText(raw,'token-file')).trim();
     if(!token||/[\r\n]/.test(token))throw usage('--token-file must contain a single token.');
-    headers.Authorization='Bearer '+token;
+    if(req.auth==='cloudflare-access'){
+      if(!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token))throw usage('--token-file must contain a Cloudflare Access application JWT.');
+      headers.Cookie='CF_Authorization='+token;
+    }else headers.Authorization='Bearer '+token;
   }
   const write=req.method==='POST';
   const state=write?{outcome:'unknown',reconcile:recovery(name,raw,req.body)}:{};

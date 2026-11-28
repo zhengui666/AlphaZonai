@@ -3,16 +3,18 @@ import {mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';
 import {isIP,type Socket} from 'node:net';
 import {join,resolve} from 'node:path';
 import {arr,bool,compile,int,obj,oneOf,opt,str,unknown} from '@earendil-works/pi-schema';
+import {createRemoteJWKSet,jwtVerify} from 'jose';
 import type {ModelState} from './model-settings.ts';
 import {validateTargets,type ReceiverSettings} from './strategy.ts';
 
 export type ReviewSettings={enabled:boolean;time:string;language:'zh-CN'|'en';objective:string};
 export const defaultReview:ReviewSettings={enabled:true,time:'08:00',language:'zh-CN',objective:''};
-type Settings={
+type AccessSettings={accessTeam?:string;accessAud?:string};
+export type Settings={
   model:ModelState;
   nautilus:ReceiverSettings & {strategyToken:string};
   review:ReviewSettings;
-  data:{catalog:string;stateDir:string;host:string;port:number;agentToken:string};
+  data:{catalog:string;stateDir:string;host:string;port:number;agentToken:string} & AccessSettings;
 };
 
 export function localSettingsRequest(host:string|undefined,socket:Pick<Socket,'remoteAddress'|'localAddress'>,gateway?:string){
@@ -21,13 +23,27 @@ export function localSettingsRequest(host:string|undefined,socket:Pick<Socket,'r
     Boolean(peer&&(peer.startsWith('127.')||peer==='::1'||socket.remoteAddress===socket.localAddress||peer===gateway));
 }
 
+let signingKeys:{issuer:string;keys:ReturnType<typeof createRemoteJWKSet>}|undefined;
+export async function cloudflareSettingsAccess(assertion:string|string[]|undefined,{accessTeam,accessAud}:AccessSettings){
+  if(typeof assertion!=='string'||!assertion||!accessTeam||!accessAud)return false;
+  const issuer=`https://${accessTeam}.cloudflareaccess.com`;
+  if(signingKeys?.issuer!==issuer){
+    signingKeys={issuer,keys:createRemoteJWKSet(new URL('/cdn-cgi/access/certs',issuer))};
+  }
+  try{
+    const {payload}=await jwtVerify(assertion,signingKeys.keys,{issuer,audience:accessAud,algorithms:['RS256'],requiredClaims:['exp']});
+    return payload.type==='app';
+  }catch{return false;}
+}
+
 const pathValue=str({pattern:'^(?!\\s*$)[^\\u0000\\r\\n]+$'});
 const token=str({pattern:'^[!-~]*$'});
 const nautilusPatch=compile(obj({python:opt(pathValue),targets:opt(arr(unknown())),strategyToken:opt(token)}));
 const reviewPatch=compile(obj({enabled:opt(bool()),time:opt(str({pattern:'^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'})),
   language:opt(oneOf(['zh-CN','en'])),objective:opt(str({maxLength:2000}))}));
 const dataPatch=compile(obj({catalog:opt(pathValue),stateDir:opt(pathValue),host:opt(str({minLength:1,maxLength:253})),
-  port:opt(int({minimum:1,maximum:65535})),agentToken:opt(token)}));
+  port:opt(int({minimum:1,maximum:65535})),agentToken:opt(token),
+  accessTeam:opt(str({pattern:'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?$'})),accessAud:opt(str({pattern:'^(?:[0-9a-f]{64})?$'}))}));
 
 export function applySettings(s:Settings,section:string,patch:unknown){
   if(section==='nautilus'&&nautilusPatch.check(patch)){

@@ -9,7 +9,7 @@ import {createCogAlpha,Runs,Resume,setModelSpeed} from './extension.ts';
 import {paper,minute} from './method.ts';
 import {agentWriteError,researchDirection,runAdmission,sameRunAdmission} from './research-context.ts';
 import {chatGPTLogin,checkOpenAIKey,choice,createSettingsModels,modelStore,modelView,recordedStrategyModel,type ModelChoice} from './model-settings.ts';
-import {applySettings,localSettingsRequest,settingsStore} from './settings.ts';
+import {applySettings,cloudflareSettingsAccess,localSettingsRequest,settingsStore,type Settings} from './settings.ts';
 import {authorizedStrategyWrite,strategyEvidence,strategyId} from './strategy.ts';
 import {importPerformance,performanceReport,PerformanceIndex,PerformanceReport} from './performance.ts';
 import {Reviews,ReviewInputs,reviewRequest,sameReviewRequest} from './review.ts';
@@ -77,9 +77,7 @@ async function startReview(tx:Tx,input:ReviewInput,mode:'paper'|'live',modelSett
   reviews[input.id]={...input,mode,modelSettings,task,created:new Date().toISOString(),status:'diagnosing'};
   return true;
 }
-async function settingsView(local:boolean){
-  if(!local)return {writable:false};
-  const {model,nautilus:{strategyToken,...nautilus},review,data:{agentToken,...data}}=await store.read();
+async function settingsView({model,nautilus:{strategyToken,...nautilus},review,data:{agentToken,...data}}:Settings){
   return {writable:true,model:{connected:model.openai?.type==='api_key',chatGPTConnected:model['openai-codex']?.type==='oauth',
     chatGPT:chatGPT.view(),defaults:model.defaults??null,models:await availableModels()},
     nautilus:{...nautilus,strategyTokenConfigured:Boolean(strategyToken)},review,data:{...data,agentTokenConfigured:Boolean(agentToken)}};
@@ -200,15 +198,18 @@ const server=createServer(async (req,res)=>{
       return send(res,200,{targets:targets.map(({id,label,roles})=>({id,label,roles})),enabled:Boolean(strategyToken)});
     }
     if(path==='/api/models'&&method==='GET')return send(res,200,{models:await availableModels()});
-    if(path==='/api/settings'&&method==='GET')return send(res,200,await settingsView(local));
     const section=path.match(/^\/api\/settings\/(model|nautilus|review|data)$/)?.[1];
-    if(section&&method==='POST'){
-      if(!local||(!origin&&req.headers['sec-fetch-site']))return send(res,403,{error:'SETTINGS_LOCAL'});
+    if((path==='/api/settings'&&method==='GET')||(section&&method==='POST')){
+      const saved=await store.read();
+      const writable=local||await cloudflareSettingsAccess(req.headers['cf-access-jwt-assertion'],saved.data);
+      if(!section)return send(res,200,writable?await settingsView(saved):{writable:false});
+      if(!writable||(!origin&&req.headers['sec-fetch-site'])||(!local&&origin&&origin!=='https://'+req.headers.host))
+        return send(res,403,{error:'SETTINGS_ACCESS'});
       const raw=await body(req,'settings');
       if(section!=='model'){
         await store.edit(s=>applySettings(s,section,raw));
         if(section==='review')await syncDailySchedule();
-        return send(res,200,await settingsView(true));
+        return send(res,200,await settingsView(await store.read()));
       }
       if(raw?.action==='connect'){
         const key=await checkOpenAIKey(raw.key);
@@ -224,7 +225,7 @@ const server=createServer(async (req,res)=>{
       }else if(raw?.action==='defaults'){
         await modelPrefs.save(choice(raw,await availableModels()));
       }else throw Error('BAD_REQUEST');
-      return send(res,200,await settingsView(true));
+      return send(res,200,await settingsView(await store.read()));
     }
     if(path==='/api/runs'&&method==='GET'){
       const runs=await snapshot();

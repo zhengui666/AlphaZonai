@@ -2,10 +2,11 @@
 
 AlphaZonai separates the human report surface from the external-agent control
 surface. The Web dashboard reads research, coverage, candidate evidence, strategy
-validation, deployment receipts and execution reports. The local dashboard
+validation, deployment receipts and execution reports. The dashboard
 and CLI share settings for models, NautilusTrader, performance reviews and
-data. Either can request an AI review of imported reports. An agent uses the
-CLI to initiate or manage work and obtain machine-readable results. Pi Durable
+data. The local dashboard and authorized CLI can request an AI review of
+imported reports. An agent uses the CLI to manage work and obtain
+machine-readable results. Pi Durable
 owns the task lifecycle, and NautilusTrader owns Catalog reads and backtests.
 
 ## What we borrowed from Lark
@@ -56,9 +57,11 @@ is uncertain, read that exact ID before deciding to submit it again.
 
 ## Deployment and authorization
 
-Configure the service through the local **Settings** page or
-`alphazonai settings` commands over loopback or an SSH tunnel. For remote CLI
-research writes, set an agent token in **Data settings** and access the
+Configure the service with **Settings** or `alphazonai settings` over loopback
+or an SSH tunnel. To authorize remote settings, save the Cloudflare Access
+team slug and application AUD in **Data settings**. The browser uses its
+Access session and the CLI accepts the application JWT via `--token-file`.
+For remote CLI research writes, set an agent token in **Data settings** and access the
 instance over HTTPS. Strategy operations and performance uploads use the
 strategy token from **NautilusTrader settings**. Pass the corresponding
 credential with `--token-file FILE`. The service rejects browser-origin

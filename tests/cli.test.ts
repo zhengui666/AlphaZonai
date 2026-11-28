@@ -57,7 +57,8 @@ test('CLI reads settings and submits each section without printing secret input 
   const secret='test-credential-value';
   const updates={
     model:{action:'connect',key:secret},nautilus:{targets:[],strategyToken:secret},
-    review:{enabled:false,time:'09:30',language:'en',objective:'Review fees'},data:{catalog:'/data/bars',agentToken:secret},
+    review:{enabled:false,time:'09:30',language:'en',objective:'Review fees'},
+    data:{catalog:'/data/bars',agentToken:secret,accessTeam:'my-team',accessAud:'a'.repeat(64)},
   };
   const schema=await invoke(['schema','settings','set']);
   assert.deepEqual(Object.keys(JSON.parse(schema.out).data.fields),Object.keys(updates));
@@ -84,6 +85,28 @@ test('CLI reads settings and submits each section without printing secret input 
     const invalid=await invoke(['settings','set','--section','model','--file','-'],'{"key":"'+secret+'"');
     assert.equal(invalid.code,2);
     assert.ok(!(invalid.out+invalid.err).includes(secret));
+  });
+});
+
+test('settings commands use an Access cookie and require an application token for remote updates',async t=>{
+  const token='sample.header.signature',dir=await mkdtemp(join(tmpdir(),'alpha-cli-access-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const patch=join(dir,'settings.json');
+  await writeFile(patch,'{"language":"en"}');
+  const update=['settings','set','--section','review','--file',patch];
+  const blocked=await invoke([...update,'--url','https://example.invalid']);
+  assert.equal(blocked.code,2);assert.match(JSON.parse(blocked.err).error.message,/--token-file/);
+  const invalid=await invoke([...update,'--url','https://example.invalid','--token-file','-'],'research-token');
+  assert.equal(invalid.code,2);assert.ok(!invalid.err.includes('research-token'));
+  await fixture((req,res)=>{
+    assert.equal(req.headers.cookie,'CF_Authorization='+token);
+    assert.equal(req.headers.authorization,undefined);
+    json(res,200,{writable:true});
+  },async origin=>{
+    for(const cmd of [['settings','get'],update]){
+      const result=await invoke([...cmd,'--url',origin,'--token-file','-'],token);
+      assert.equal(result.code,0);assert.ok(!result.out.includes(token));
+    }
   });
 });
 

@@ -130,6 +130,11 @@
             <label><span data-i="listenPort"></span><input name="port" type="number" min="1" max="65535" required></label>
           </div>
           <p class="subtle" data-i="restartSettings"></p>
+          <div class="field-pair">
+            <label><span data-i="accessTeam"></span><input name="accessTeam" placeholder="my-team" spellcheck="false" autocapitalize="none" aria-describedby="accessHint"></label>
+            <label><span data-i="accessAud"></span><input name="accessAud" spellcheck="false" autocapitalize="none" aria-describedby="accessHint"></label>
+          </div>
+          <p id="accessHint" class="subtle" data-i="accessHint"></p>
           <button class="primary" type="submit" data-i="saveSettings"></button>
         </form>
       </section>
