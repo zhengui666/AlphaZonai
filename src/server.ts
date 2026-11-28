@@ -38,7 +38,8 @@ async function syncDailySchedule(){
 await syncDailySchedule();
 
 const site=fileURLToPath(new URL('../web/',import.meta.url));
-const assets:Record<string,string>={'/':'index.html','/style.css':'style.css','/app.js':'app.js','/locale.js':'locale.js','/reviews.js':'reviews.js','/settings.js':'settings.js'};
+const assets:Record<string,string>={'/':'index.html','/assets/style.css':'style.css','/assets/app.js':'app.js',
+  '/assets/locale.js':'locale.js','/assets/reviews.js':'reviews.js','/assets/settings.js':'settings.js'};
 const mime:Record<string,string>={html:'text/html',css:'text/css',js:'text/javascript'};
 const snapshot=async()=>((await harness.snapshot(Runs,root.id,ctx))?.runs||{}) as Record<string,any>;
 const send=(res:any,status:number,result:any)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(result));};
@@ -119,7 +120,7 @@ const server=createServer(async (req,res)=>{
     const method=req.method;
     const local=localSettingsRequest(req.headers.host,req.socket,gateway);
     if(method==='GET'&&Object.hasOwn(assets,path)){
-      const name=assets[path];res.writeHead(200,{'Content-Type':mime[name.split('.').at(-1)!]+';charset=utf-8','Content-Security-Policy':"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(await readFile(join(site,name)));return;
+      const name=assets[path];res.writeHead(200,{'Content-Type':mime[name.split('.').at(-1)!]+';charset=utf-8','Cache-Control':'private, no-cache','Content-Security-Policy':"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(await readFile(join(site,name)));return;
     }
     if(method==='POST'&&(path==='/api/runs'||path==='/api/performance'||/^\/api\/runs\/[0-9a-f-]{36}\/(actions|strategies)$/.test(path))){
       const isStrategy=path.endsWith('/strategies')||path==='/api/performance';
