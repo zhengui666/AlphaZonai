@@ -5,7 +5,11 @@ def evaluate(frame, max_nan=0.3, min_assets=5, min_periods=5):
     absent = float(frame.factor.isna().mean())
     if not np.isfinite(absent) or absent > max_nan:
         return {"failure": "MISSING_VALUES", "coverage": {"missing": absent if np.isfinite(absent) else None}}
-    eligible = frame.dropna(subset=["factor", "target"])
+    eligible = frame.dropna(subset=["instrument", "factor", "target"])
+    # Each instrument contributes one factor/return pair to the cross-section,
+    # including when multiple native streams publish at the same timestamp.
+    if eligible.duplicated(["ts", "instrument"]).any():
+        eligible = eligible.groupby(["ts", "instrument"], sort=False, as_index=False)[["factor", "target"]].mean()
     ic, rank_ic, mi = [], [], []
     for _, group in eligible.groupby("ts", sort=False):
         x, y = group.factor, group.target

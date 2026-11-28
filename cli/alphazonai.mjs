@@ -33,7 +33,13 @@ const commands={
   'models list':{description:'List available provider model IDs and capabilities.',method:'GET',path:'/api/models',options:{}},
   'runs list':{description:'List research runs.',method:'GET',path:'/api/runs',options:{}},
   'runs start':{description:'Submit a new research run, or reconcile a retry with the same UUID and input.',method:'POST',path:'/api/runs',auth:'agent',options:{
-    id:arg('uuid','Caller-generated UUID; keep it for retries.',true),start,end,horizon:arg('integer','Prediction horizon in minutes (default 5; not hold time).'),
+    id:arg('uuid','Caller-generated UUID; keep it for retries.',true),
+    start:arg('string','Inclusive research start as a Nautilus timestamp, e.g. a UTC date or ISO timestamp.',true),
+    end:arg('string','Exclusive research end as a Nautilus timestamp.',true),
+    horizon:arg('integer','Prediction horizon in minutes (default 5; not hold time).'),
+    'data-file':arg('file','Native Nautilus catalog query as a JSON object. Use - for stdin.'),
+    'instrument-field':arg('string','Source field identifying the instrument for each observation.'),
+    'target-field':arg('string','Numeric source field for the forward-return label.'),
     seed:arg('integer','Research random seed (default 42).'),direction:arg('string','Optional research direction.'),
     'direction-file':file,provider:arg('string','Provider ID from models list.'),model:arg('string','Model ID from models list or omit to use saved defaults.'),
     thinking:arg('string','A supported thinking level from models list.'),speed:arg('string','A supported speed from models list; use default for Standard and priority for Fast.'),
@@ -127,8 +133,8 @@ function parse(argv){
   }
   for(const [k,v] of Object.entries(spec.options))if(v.required&&!Object.hasOwn(raw,k))throw usage('Missing --'+k+'.');
   if(raw.section&&!Object.hasOwn(settingsFields,raw.section))throw usage('--section must be model, nautilus, review or data.');
-  if(raw['token-file']==='-'&&['brief-file','direction-file','report-file','file'].some(k=>raw[k]==='-'))throw usage('Only one input file can use stdin.');
-  if(raw.start&&raw.end&&raw.start>=raw.end)throw usage('--end must be after --start.');
+  if(Object.keys(raw).filter(k=>opt[k].type==='file'&&k!=='output'&&raw[k]==='-').length>1)throw usage('Only one input file can use stdin.');
+  if(selected==='strategies build'&&raw.start>=raw.end)throw usage('--end must be after --start.');
   if(raw['dry-run']&&spec.method!=='POST')throw usage('--dry-run applies only to write commands.');
   return {name:selected,raw,spec};
 }
@@ -158,6 +164,16 @@ async function requestPlan(name,spec,raw){
     if(raw.provider&&!raw.model)throw usage('--provider requires --model.');
     const direction=raw.direction??await readText(raw,'direction-file');
     body={id:raw.id,preset:'minute',start:raw.start,end:raw.end,horizon:raw.horizon??5,seed:raw.seed??42};
+    if(raw['data-file']!==undefined){
+      const contents=await readText(raw,'data-file');
+      // Keep the original numeric literals when serializing native query arguments,
+      // including nanosecond timestamps outside JavaScript's safe integer range.
+      try{body.data=JSON.parse(contents,(_key,value,context)=>typeof value==='number'?JSON.rawJSON(context.source):value);}
+      catch{throw usage('--data-file must contain valid JSON.');}
+      if(!body.data||typeof body.data!=='object'||Array.isArray(body.data)||JSON.isRawJSON(body.data))throw usage('--data-file must contain a JSON object.');
+    }
+    if(raw['instrument-field']!==undefined)body.instrumentField=raw['instrument-field'];
+    if(raw['target-field']!==undefined)body.targetField=raw['target-field'];
     if(direction!==undefined){
       if(direction.length>4000)throw usage('Research direction cannot exceed 4000 characters.');
       body.direction=direction;

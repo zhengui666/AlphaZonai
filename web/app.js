@@ -424,7 +424,11 @@ function render(){
   if(r.error)output.push(node('p',t(r.error),'problem'));
   const cov=r.coverage;
   const stats=node('div',undefined,'stat-grid');
-  stats.append(stat(t('assetCount'),number(cov?.instruments,0)),stat(t('observedMinutes'),number(cov?.observedMinutes,0),cov?.expectedMinutes!=null?t('expectedMinutes')+': '+number(cov.expectedMinutes,0):null),stat(t('rows'),number(cov?.rows,0)),stat(t('generations'),number(generations.length,0)));
+  const observations=cov?.observedMinutes!=null && cov.observedTimestamps==null
+    ?stat(t('observedMinutes'),number(cov.observedMinutes,0),cov.expectedMinutes!=null?t('expectedMinutes')+' · '+number(cov.expectedMinutes,0):null)
+    :stat(t('observedTimestamps'),number(cov?.observedTimestamps,0));
+  const labeled=cov?.labelRows==null?null:t('labelRows')+' · '+number(cov.labelRows,0);
+  stats.append(stat(t('assetCount'),number(cov?.instruments,0)),observations,stat(t('rows'),number(cov?.rows,0),labeled),stat(t('generations'),number(generations.length,0)));
   output.push(stats);
   if(r.progress?.total>0&&onAir.has(r.status)){
     const progress=node('progress');progress.max=r.progress.total;progress.value=r.progress.completed;
@@ -435,8 +439,12 @@ function render(){
   }
   const input=r.input||{};
   const settings=properties([[t('model'),r.model],[t('thinking'),r.thinking],[t('speed'),r.speed==='priority'?'Fast':r.speed==='default'?'Standard':t('providerDefault')],
-    [t('horizon'),number(input.horizon,0)],[t('startDate'),date(input.start)],[t('endExclusive'),date(input.end)],[t('sourceBars'),input.barSpec],
-    ...(cov?[[t('firstBar'),cov.from],[t('lastBar'),cov.through]]:[]),
+    [t('horizon'),number(input.horizon,0)],[t('startDate'),input.start],[t('endExclusive'),input.end],
+    ...(input.data?[[t('catalogQuery'),JSON.stringify(input.data,null,2)]]:input.barSpec?[[t('sourceBars'),input.barSpec]]:[]),
+    ...(input.instrumentField?[[t('instrumentField'),input.instrumentField]]:[]),
+    ...(input.targetField||cov?.targetField?[[t('targetField'),cov?.targetField??input.targetField]]:[]),
+    ...(cov?[[t('firstObservation'),cov.from],[t('lastObservation'),cov.through]]:[]),
+    ...(cov?.columns?.length?[[t('featureColumns'),cov.columns.join(', ')]]:[]),
     ...(r.stopReason?[[t('runStopReason'),t(r.stopReason==='limit'?'limit':r.stopReason)]]:[]),
     [t('runId'),r.id]]);
   if(input.direction)settings.append(properties([[t('direction'),input.direction]]));

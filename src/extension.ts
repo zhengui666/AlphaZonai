@@ -1,14 +1,14 @@
 import {AssistantEntry, GenerationTask, hook, configure, defineDoc, defineExtension, defineSignal, defineTask} from '@earendil-works/pi-durable';
 import {obj, str} from '@earendil-works/pi-schema';
 import {spawn} from 'node:child_process';
-import {readFile} from 'node:fs/promises';
+import {readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {metrics, modes, roles, rng, select, shuffle, type Candidate, paper} from './method.ts';
 import {providerSpeed,type ServiceTier} from './model-settings.ts';
 import {isDeepStrictEqual} from 'node:util';
 import {callTarget,planInstructions,validateStrategyPlan,type ReceiverSettings} from './strategy.ts';
-import {researchPromptContext} from './research-context.ts';
+import {researchDataSource,researchPromptContext} from './research-context.ts';
 import {createPerformanceReview} from './review.ts';
 import {reviewInstructions} from './review-analysis.ts';
 
@@ -27,8 +27,9 @@ const abort=(_t:any,a:any,c:any)=>a.commit(()=>({status:'terminal',outcome:{stat
 export type Driver = {
   keys:readonly string[];
   contract:string;
-  prepare:(config:any,signal:AbortSignal)=>Promise<unknown>;
+  prepare:(config:any,signal:AbortSignal)=>Promise<{rows?:number;labelRows?:number;columns?:string[];targetField?:string|null}>;
   score:(code:string,config:any,signal:AbortSignal)=>Promise<any>;
+  release?:(id:string)=>Promise<void>;
 };
 const internalSkill=new URL('../skills/cogalpha/SKILL.md', import.meta.url);
 const strategySkill=new URL('../skills/strategy/SKILL.md',import.meta.url);
@@ -38,21 +39,35 @@ async function python(workers:Workers,phase:string,id:string,body:unknown,signal
   const {python:executable}=await workers.nautilusSettings();
   return new Promise<any>((resolve,reject)=>{
     const proc=spawn(executable,[bridge,phase,join(workers.stateDir,id)],{
-      signal,env:{PATH:process.env.PATH,LANG:'C.UTF-8',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1'},stdio:['pipe','pipe','pipe']});
+      signal,env:{...(phase==='prepare'?process.env:{PATH:process.env.PATH}),LANG:'C.UTF-8',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1'},stdio:['pipe','pipe','pipe']});
     let out='', err='';
     proc.stdout.on('data',d=>{out+=d;});
     proc.stderr.on('data',d=>{err=(err+d).slice(-8192);});
     proc.stdin.on('error',()=>{});
     proc.on('error',reject);
-    proc.on('close',n=>{if(n!==0){reject(new Error(err.includes('SANDBOX_UNAVAILABLE')?'SANDBOX_UNAVAILABLE':err.includes('NO_BARS')?'NO_BARS':'QUANT_WORKER_FAILED'));return;}try{resolve(JSON.parse(out));}catch(e){reject(e);}});
+    proc.on('close',n=>{
+      let result;
+      try{result=JSON.parse(out);}catch{}
+      if(n===0&&result){resolve(result);return;}
+      if(phase==='prepare'&&typeof result?.error==='string'){
+        reject(new Error(result.error));return;
+      }
+      reject(new Error(err.includes('SANDBOX_UNAVAILABLE')?'SANDBOX_UNAVAILABLE':'QUANT_WORKER_FAILED'));
+    });
     proc.stdin.end(JSON.stringify(body));
   });
 }
 function nautilusDriver(workers:Workers):Driver {
   return {
-    keys:metrics,contract:'Return a complete Python function factor(df) -> pandas Series aligned to the input MultiIndex (ts, instrument). ts is UTC availability in integer nanoseconds. Only open, high, low, close and volume exist. Use only current and prior rows. Respect time gaps; do not hardcode instruments or use BTC movement as a market-wide signal. No network or file I/O. Do not implement orders or use future returns in factor().',
+    keys:metrics,contract:'Return a complete Python function factor(df) -> pandas Series aligned to the input MultiIndex (ts, instrument), including repeated observations. ts is UTC availability in integer nanoseconds. Use the feature columns in the run research context and only current or prior observations. Respect time gaps. Do not hardcode instruments, assume an OHLCV schema, use BTC movement as a market-wide signal, access files or the network, place orders or use future returns.',
     prepare:(c,s)=>python(workers,'prepare',c.id,c,s),
-    score:(code,c,s)=>python(workers,'score',c.id,{code,nanLimit:c.rules.nanLimit},s)
+    score:(code,c,s)=>python(workers,'score',c.id,{code,nanLimit:c.rules.nanLimit},s),
+    release:async id=>{
+      // Only the isolated evaluator uses these per-run inputs. Reports and exports live in Pi.
+      for(const name of ['features.parquet','labels.parquet','features.tmp','labels.tmp']){
+        await rm(join(workers.stateDir,id,name),{force:true});
+      }
+    }
   };
 }
 class WorkflowError extends Error {}
@@ -105,6 +120,9 @@ function generationPlan(c:any,g:number,parents:Candidate[],feedback:any) {
   });
 }
 export function createCogAlpha(workers:Workers,driver:Driver=nautilusDriver(workers),ask:Ask=piAsk){
+  const release=async(id:string,api:any)=>{
+    try{await driver.release?.(id);}catch(e){api.report(e);}
+  };
   const CandidateTask=defineTask<any,any,any>({
     name:'alphazonai.candidate',version:1,initial:()=>({phase:'evaluate'}),
     phases:{evaluate:async (task,api,ctx)=>{
@@ -199,36 +217,48 @@ export function createCogAlpha(workers:Workers,driver:Driver=nautilusDriver(work
   });
   const Run=defineTask<any,any,any>({
     name:'alphazonai.run',version:1,initial:()=>({phase:'prepare'}),
-    abort:async(task,api,ctx)=>api.commit(async tx=>{
-      (await tx.doc(Runs,(task.input.docId||api.conversationId))).runs[task.input.id].status='stopped';
-      return {status:'terminal',outcome:{status:'aborted'}};
-    },ctx),
+    abort:async(task,api,ctx)=>{
+      await release(task.input.id,api);
+      return api.commit(async tx=>{
+        (await tx.doc(Runs,(task.input.docId||api.conversationId))).runs[task.input.id].status='stopped';
+        return {status:'terminal',outcome:{status:'aborted'}};
+      },ctx);
+    },
     phases:{
       prepare:async(task,api,ctx)=>{
         let coverage, error;
         try {coverage=await driver.prepare(task.input,api.signal);}
         catch(e:any) {if(api.signal.aborted)throw e; error=e.message;}
+        if(coverage?.labelRows===0)error=coverage.rows===0?'NO_RESEARCH_OBSERVATIONS':'NO_RESEARCH_LABELS';
+        if(error)await release(task.input.id,api);
         return api.commit(async tx=>{
           const r=(await tx.doc(Runs,(task.input.docId||api.conversationId))).runs[task.input.id];
-          if(error){r.status='failed';r.error=error;return done(null);}
           r.coverage=coverage??null;
-          return next({phase:'boundary',g:0,parents:[],elite:[],feedback:null,history:[]});
+          if(error){r.status='failed';r.error=error;return done(null);}
+          const dataContext=coverage?.columns?{featureColumns:coverage.columns,targetField:coverage.targetField??null,
+            ...(task.input.data?{dataSource:researchDataSource(task.input.data)}:{})}:{};
+          return next({phase:'boundary',g:0,parents:[],elite:[],feedback:null,history:[],dataContext});
         },ctx);
       },
       boundary:async(task,api,ctx)=>api.commit(async tx=>{
         const st=task.state.checkpoint, r=(await tx.doc(Runs,(task.input.docId||api.conversationId))).runs[task.input.id];
         if(r.pause){r.status='paused';r.waitingFor=st.g;return {status:'sleeping',checkpoint:st,signals:[Resume.key(`generation:${st.g}`)]};}
-        const plan=generationPlan(task.input,st.g,st.parents,st.feedback);
+        const config={...task.input,...st.dataContext};
+        if(st.dataContext?.dataSource){delete config.catalog;delete config.data;}
+        const plan=generationPlan(config,st.g,st.parents,st.feedback);
         const id=await tx.createTask(Gen,{id:task.input.id,docId:task.input.docId||api.conversationId,plan,parallel:task.input.rules.parallel},owner(api));
         r.status='running';r.current=st.g;r.progress={completed:0,total:plan.length};
         return {status:'waiting',checkpoint:{...st,phase:'settle',child:id},on:[id],policy:'allSettled'};
       },ctx),
       settle:async(task,api,ctx)=>{
-        const st=task.state.checkpoint, c=task.input;
+        const st=task.state.checkpoint, c={...task.input,...st.dataContext};
         const [out]:any=await api.outcomes([st.child],ctx);
-        if(out.status!=='completed')return api.commit(async tx=>{
-          const r=(await tx.doc(Runs,(c.docId||api.conversationId))).runs[c.id];r.status='failed';r.error='GENERATION_FAILED';return done(null);
-        },ctx);
+        if(out.status!=='completed'){
+          await release(c.id,api);
+          return api.commit(async tx=>{
+            const r=(await tx.doc(Runs,(c.docId||api.conversationId))).runs[c.id];r.status='failed';r.error='GENERATION_FAILED';return done(null);
+          },ctx);
+        }
         const rows:Candidate[]=out.result;
         const sel=select(rows,st.elite,c.rules,driver.keys);
         const rnd=rng(c.seed+st.g*65537);
@@ -245,12 +275,14 @@ export function createCogAlpha(workers:Workers,driver:Driver=nautilusDriver(work
         const avg=(xs:number[])=>xs.reduce((s,v)=>s+v,0)/xs.length;
         const plateau=w>0&&prev.length===w&&cur.length===w&&[...prev,...cur].every(Number.isFinite)&&avg(cur)-avg(prev)<=c.rules.plateauDelta;
         const fatal=rows.length>0&&['SANDBOX_UNAVAILABLE','MODEL_UNANSWERED'].find(f=>rows.every(x=>x.failure===f));
+        const finished=st.g>=c.rules.generations||plateau;
+        if(fatal||finished)await release(c.id,api);
         return api.commit(async tx=>{
           const r=(await tx.doc(Runs,(c.docId||api.conversationId))).runs[c.id];
           r.generations.push({index:st.g,subcycle:Math.floor(Math.max(0,st.g-1)/c.rules.subcycle),keys:driver.keys,rows,qualified:sel.qualified,elite:sel.elite,parents:sel.parents.map(x=>x.id),elites:sel.elites.map(x=>x.id),feedback:{sample,notes}});
           if(fatal){r.status='failed';r.error=fatal;return done(null);}
-          if(st.g>=c.rules.generations||plateau){r.status='completed';r.stopReason=plateau?'plateau':'limit';return done(null);}
-          return next({phase:'boundary',g:st.g+1,parents:sel.parents,elite:sel.elites,feedback:{sample,notes},history});
+          if(finished){r.status='completed';r.stopReason=plateau?'plateau':'limit';return done(null);}
+          return next({phase:'boundary',g:st.g+1,parents:sel.parents,elite:sel.elites,feedback:{sample,notes},history,dataContext:st.dataContext??{}});
         },ctx);
       }
     }

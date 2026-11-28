@@ -1,8 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {authorizedStrategyWrite,callTarget,strategyEvidence,validateStrategyPlan,validateTargets} from '../src/strategy.ts';
+import {authorizedStrategyWrite,callTarget,strategyEvidence,strategyWindow,validateStrategyPlan,validateTargets} from '../src/strategy.ts';
 const plan={title:'Control',strategyClass:'MyStrategy',configClass:'MyConfig',
   source:'class MyStrategy(Strategy):\n  pass\nclass MyConfig(StrategyConfig):\n  pass',config:{unknownConfigChoice:42}};
+
+test('strategy holdout starts at or after the catalog query end, including sub-millisecond timestamps',()=>{
+  const requested={start:'2026-10-08',end:'2026-10-09'};
+  const midnight=BigInt(Date.parse(requested.start))*1_000_000n;
+  const research=(nanos:bigint)=>({input:{end:'2026-10-08T08:00+08:00'},coverage:{endExclusiveNs:String(nanos)}});
+  const expected={start:'2026-10-08T00:00:00.000Z',end:'2026-10-09T00:00:00.000Z',researchEnd:'2026-10-08T00:00:00.000Z'};
+  assert.equal(strategyWindow(research(midnight+1n),requested),null);
+  assert.deepEqual(strategyWindow(research(midnight-1n),requested),expected);
+  assert.deepEqual(strategyWindow(research(midnight),requested),expected);
+  assert.deepEqual(strategyWindow({input:{end:'2026-10-08'}},requested),expected);
+});
 
 test('accepts arbitrary native source and rejects ambiguous or extraneous payloads',()=>{
   assert.deepEqual(validateStrategyPlan(plan),plan);

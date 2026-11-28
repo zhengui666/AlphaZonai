@@ -25,3 +25,15 @@ test('agent write paths separate browser use, local CLI and configured bearer au
   assert.equal(agentWriteError({localHost,authorization:'Bearer two'},'one'),'AGENT_AUTH_REQUIRED');
   assert.equal(agentWriteError({localHost:false,authorization:'Bearer one'},'one'),null);
 });
+
+test('a retry preserves the native catalog query and the return price field',()=>{
+  const data={data_cls:'nautilus_trader.model.data:TradeTick',identifiers:['ONE.VENUE'],metadata:{size:1,venue:'X'}};
+  const first=runAdmission({data,targetField:'price'});
+  const retry=runAdmission({targetField:'price',data:{metadata:{venue:'X',size:1},identifiers:['ONE.VENUE'],data_cls:data.data_cls}});
+  assert.ok(sameRunAdmission(first,retry));
+  assert.equal(sameRunAdmission(first,runAdmission({data:{...data,identifiers:['TWO.VENUE']},targetField:'price'})),false);
+  assert.equal(sameRunAdmission(first,runAdmission({data,targetField:'size'})),false);
+  assert.equal(sameRunAdmission(first,runAdmission({data,targetField:'price',instrumentField:'series_id'})),false);
+  assert.equal(sameRunAdmission(runAdmission({}),first),false);
+  assert.throws(()=>runAdmission({data:[]}),/BAD_REQUEST/);
+});

@@ -63,13 +63,32 @@ contains `targets` using the local or SSH target format. [Strategy delivery](../
 The dates below are illustrative. Choose ranges known to be in the Catalog.
 Replace variables with the actual generated UUIDs and IDs returned by targets.
 
+Use `--data-file FILE` (or `-` for stdin) for the native NautilusTrader catalog
+query. For example, this `query.json` requests trade ticks across the catalog.
+
+```json
+{"data_cls":"nautilus_trader.model.data:TradeTick"}
+```
+
+Supply native `identifiers` when the run calls for particular instruments or
+full bar type IDs. NautilusTrader selects the query backend. Its Rust backend
+accepts a SQL predicate in `where`. For Arrow reads, use a native
+`filter_expr` such as `field("ts_event") > 0`. Omitting the file queries
+`Bar` across instruments and bar types. Set the research window with
+`--start` and `--end` (exclusive), using
+UTC dates or precise timestamps such as `2026-10-01T09:30:00.000000001Z`.
+The prediction horizon is measured in minutes. Use `--target-field FIELD`
+to calculate forward returns from a numeric field in the selected records.
+For custom data that identifies instruments with its own column (for example,
+`series_id`), pass `--instrument-field series_id` to score within each series.
+
 ```sh
 alphazonai doctor
 alphazonai id
 alphazonai runs start --id "$RUN_ID" --start 2026-10-01 --end 2026-10-08 \
-  --direction-file direction.txt --dry-run
+  --data-file query.json --direction-file direction.txt --dry-run
 alphazonai runs start --id "$RUN_ID" --start 2026-10-01 --end 2026-10-08 \
-  --direction-file direction.txt --token-file agent.token
+  --data-file query.json --direction-file direction.txt --token-file agent.token
 alphazonai runs wait --id "$RUN_ID" --wait-ms 30000
 alphazonai runs get --id "$RUN_ID"
 alphazonai strategies targets
@@ -79,6 +98,12 @@ alphazonai strategies build --id "$RUN_ID" --strategy "$STRATEGY_ID" \
 alphazonai strategies wait --id "$RUN_ID" --strategy "$STRATEGY_ID"
 alphazonai strategies export --id "$RUN_ID" --strategy "$STRATEGY_ID" --output strategy.json
 ```
+
+The run report records the query, observed timestamps, available feature
+columns and number of rows with forward returns. An empty result and a result
+with no usable forward returns each stop the run before factor generation.
+A failed Nautilus query reports the underlying error. Cross-sectional metrics
+require multiple instruments observed at the same timestamp.
 
 After a separate request to stage the validated version:
 

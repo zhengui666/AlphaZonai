@@ -43,11 +43,11 @@ restart. The later strategy brief is separate from the original research
 direction. No prompt can change the underlying return-label calculation or the
 data available to the candidate. A prediction horizon is not a holding period.
 
-The current minute-bar input does not include historical market capitalization.
-A possible trailing dollar-volume proxy for liquidity must be described as a
-proxy with known volume units, not presented as historical market cap. A
-requested constraint unsupported by the data should be acknowledged, not
-fabricated.
+The native catalog query determines which observations and fields reach the
+factor. The run report records the query and available feature columns.
+Use those columns to assess a requested constraint such as historical market
+capitalization. If only price and volume are available, a trailing
+dollar-volume estimate can describe liquidity when its units are known.
 
 Run admission takes a client UUID. The same new-version run ID and normalized
 request return the existing receipt even if model settings have since changed.

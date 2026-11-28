@@ -39,7 +39,7 @@ Use the service's loopback address or an SSH tunnel for initial setup. On a conf
 | `model` | Use `action: connect` with `key` for OpenAI, or `action: chatgpt-start` and follow the device prompt in `data.model.chatGPT`. Check `settings get` for login status. Use `action: defaults` with `provider`, `model`, `thinking` and `speed` from `models list`. Other actions are `disconnect`, `chatgpt-cancel` and `chatgpt-disconnect`. |
 | `nautilus` | `python` interpreter, `targets` array for local or SSH receivers, `strategyToken` for strategy and performance writes. |
 | `review` | `enabled` for daily reviews, `time` as Shanghai-local `HH:MM`, `language` as `zh-CN` or `en`, and `objective` as review focus. |
-| `data` | `catalog` path, `stateDir` for service state, `host` and `port` for listening, and `agentToken` for research writes. Set `accessTeam` (team slug) and `accessAud` (application AUD tag) to enable Cloudflare Access for settings. Clear both to disable it. Host, port and state directory take effect at service restart. |
+| `data` | `catalog` path or URI, `stateDir` for service state, `host` and `port` for listening, and `agentToken` for research writes. Set `accessTeam` (team slug) and `accessAud` (application AUD tag) to enable Cloudflare Access for settings. Clear both to disable it. Host, port and state directory take effect at service restart. |
 
 ```sh
 printf '%s\n' '{"time":"09:30","language":"en"}' | alphazonai settings set --section review --file -
@@ -49,7 +49,7 @@ Supply tokens from a private file or stdin. Omit a token field to keep its value
 
 ## Start and verify
 
-Generate a run UUID once with `alphazonai id` and keep the value from `data.id`. Use the dates, horizon and research direction requested by the user. Do not invent data availability or claims about tradability. The end date is exclusive; prediction horizon is not holding time.
+Generate a run UUID once with `alphazonai id` and keep the value from `data.id`. Pass the requested time window, prediction horizon in minutes and research direction. The end instant is exclusive. Use `--data-file FILE` for a Nautilus catalog query, or omit it to request bars. For another forward-return field, set `--target-field FIELD`. [Catalog query example](cli/WORKFLOWS.md#from-research-to-staging)
 
 ```sh
 alphazonai runs start --id "$RUN_ID" --start 2026-10-01 --end 2026-10-08 \

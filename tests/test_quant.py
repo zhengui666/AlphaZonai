@@ -33,8 +33,25 @@ class Metrics(unittest.TestCase):
         self.assertAlmostEqual(got[1],0.03)
 
     def test_degenerate_sections_are_not_scores(self):
-        frame=pd.DataFrame({"ts":[0]*5,"factor":[1]*5,"target":[1,2,3,4,5]})
+        frame=pd.DataFrame({"ts":[0]*5,"instrument":list("ABCDE"),"factor":[1]*5,"target":[1,2,3,4,5]})
         self.assertEqual(evaluate(frame)["failure"],"INSUFFICIENT_CROSS_SECTIONS")
+
+    def test_simultaneous_observations_do_not_inflate_cross_section_support(self):
+        frame=pd.DataFrame([(ts,"BTC",float(i),float(i)) for ts in range(8) for i in range(24)],
+                           columns=["ts","instrument","factor","target"])
+        result=evaluate(frame)
+        self.assertEqual(result["failure"],"INSUFFICIENT_CROSS_SECTIONS")
+        self.assertEqual(result["coverage"]["periods"],0)
+        self.assertEqual(result["coverage"]["miPeriods"],0)
+
+    def test_metrics_give_each_instrument_one_paired_vote_per_timestamp(self):
+        frame=pd.DataFrame([(ts,i,float(i),float(i)/10) for ts in range(6) for i in range(20)],
+                           columns=["ts","instrument","factor","target"])
+        extra=pd.DataFrame([(ts,3,40.0,-1.0) for ts in range(6)],columns=frame.columns)
+        repeated=pd.concat([frame,extra],ignore_index=True)
+        expected=frame.copy()
+        expected.loc[frame.instrument==3,["factor","target"]]=[21.5,-0.35]
+        self.assertEqual(evaluate(repeated),evaluate(expected))
 
 class CandidateRunner(unittest.TestCase):
     def test_trusted_causal_and_noncausal_source(self):
@@ -43,8 +60,9 @@ class CandidateRunner(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)
-            frame=pd.DataFrame([(t,a,float(20+t)) for t in range(8) for a in ("A","B")],
-                               columns=["ts","instrument","close"])
+            frame=pd.DataFrame([(t,a,float(20+t),"venue") for t in range(8) for a in ("A","B")],
+                               columns=["ts","instrument","close","source"])
+            frame["ts_event"]=frame.ts.astype("uint64")
             frame.to_parquet(path/"bars.parquet",index=False)
             caller=[sys.executable,str(Path(__file__).resolve().parents[1]/"quant"/"factor.py"),
                     str(path/"candidate.py"),str(path/"bars.parquet")]

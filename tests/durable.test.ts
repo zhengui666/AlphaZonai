@@ -15,11 +15,13 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
   const dir=await mkdtemp(join(tmpdir(),'az-pi-'));
   const counts=new Map<string,number>();
   const prompts:string[]=[];
+  const released:string[]=[];
   const direction='Compare volume persistence with price reversals; never use BTC as a market proxy.';
   const workers={stateDir:dir,nautilusSettings:async()=>({python:'python3',targets:[]})};
   const {extension,Run}=createCogAlpha(workers,{
     keys:['quality'],contract:'Text quality',
-    prepare:async()=>({rows:3}),
+    prepare:async()=>({rows:3,columns:['price','size'],targetField:'price'}),
+    release:async id=>{released.push(id);},
     score:async (code,c,signal)=>{
       counts.set(code,(counts.get(code)||0)+1);
       await delay(code==='0.0'?5:code==='0.1'?70:20,undefined,{signal});
@@ -43,7 +45,7 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
     const task=await root.commit(async tx=>{
       const doc=await tx.doc(Runs,root.id);
       doc.runs[id]={id,status:'queued',generations:[],current:0,limit:0,pause:true};
-      return tx.createTask(Run,{id,seed:1,rules,direction,horizon:5,barSpec:'1-MINUTE-LAST'},{ownership:{kind:'conversation'}});
+      return tx.createTask(Run,{id,seed:1,rules,direction,horizon:5,data:{data_cls:'nautilus_trader.model.data:TradeTick'}},{ownership:{kind:'conversation'}});
     },ctx);
     const wait=async (p:(r:any)=>boolean)=>{
       for(let i=0;i<260;i++){
@@ -55,6 +57,7 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
     };
     h.resume();
     await wait(r=>r.status==='paused');
+    assert.deepEqual(released,[]);
     await root.commit(async tx=>{
       (await tx.doc(Runs,root.id)).runs[id].pause=false;
       await tx.signal(task,Resume,'generation:0',{action:'resume'});
@@ -68,11 +71,14 @@ test('native Pi tasks keep candidate failures and recover the same generation',a
     assert.equal(counts.get('0.0'),1);
     assert.equal(run.generations[0].rows[1].failure,'TEST_REJECTION');
     assert.deepEqual(run.generations[0].elites,['0.2']);
+    assert.deepEqual(released,[id]);
     assert.ok(prompts.length>=5);
     for(const p of prompts){
       assert.ok(p.includes(direction));
       assert.ok(p.includes('"predictionHorizonMinutes":5'));
-      assert.ok(p.includes('"sourceBars":"1-MINUTE-LAST"'));
+      assert.ok(p.includes('"data_cls":"nautilus_trader.model.data:TradeTick"'));
+      assert.ok(p.includes('"featureColumns":["price","size"]'));
+      assert.ok(p.includes('"targetField":"price"'));
     }
   } finally{
     await h.close(ctx);await rm(dir,{recursive:true,force:true});
